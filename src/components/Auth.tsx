@@ -7,21 +7,28 @@ export function Auth() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
-  const [role, setRole] = useState<'customer' | 'restaurant_owner'>('customer');
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const { signIn, signUp } = useAuth();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+    setMessage('');
     setLoading(true);
 
     try {
       if (isLogin) {
         await signIn(email, password);
       } else {
-        await signUp(email, password, fullName, role);
+        const { requiresEmailConfirmation } = await signUp(email, password, fullName);
+
+        if (requiresEmailConfirmation) {
+          setMessage('Te enviamos un correo de confirmacion. Abri el enlace y luego inicia sesion con tu email y contrasena.');
+          setIsLogin(true);
+          setPassword('');
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -50,6 +57,12 @@ export function Auth() {
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6">
               {error}
+            </div>
+          )}
+
+          {message && (
+            <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg mb-6">
+              {message}
             </div>
           )}
 
@@ -99,20 +112,9 @@ export function Auth() {
             </div>
 
             {!isLogin && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Tipo de Cuenta
-                </label>
-                <select
-                  value={role}
-                  onChange={(e) => setRole(e.target.value as 'customer' | 'restaurant_owner')}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent transition"
-                >
-                  <option value="customer">Cliente</option>
-                  <option value="restaurant_owner">Dueño de Restaurante</option>
-                </select>
-                <p className="text-xs text-gray-500 mt-2">Si eres administrador, solicita credenciales directamente</p>
-              </div>
+              <p className="text-sm text-gray-500">
+                El registro público crea cuentas de cliente. Las cuentas de restaurante se gestionan desde el panel administrador.
+              </p>
             )}
 
             <button
@@ -129,6 +131,7 @@ export function Auth() {
               onClick={() => {
                 setIsLogin(!isLogin);
                 setError('');
+                setMessage('');
               }}
               className="text-orange-500 hover:text-orange-600 font-medium transition"
             >

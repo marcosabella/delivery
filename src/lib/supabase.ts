@@ -14,7 +14,8 @@ export type Profile = {
   email: string;
   full_name: string;
   phone: string | null;
-  role: 'customer' | 'restaurant_owner';
+  delivery_address: string | null;
+  role: 'customer' | 'restaurant_owner' | 'admin' | 'driver';
   created_at: string;
   updated_at: string;
 };
@@ -47,9 +48,11 @@ export type MenuItem = {
 
 export type Order = {
   id: string;
-  customer_id: string;
+  customer_id: string | null;
+  guest_customer_name: string | null;
   restaurant_id: string;
   status: 'pending' | 'confirmed' | 'preparing' | 'delivering' | 'delivered' | 'cancelled';
+  delivery_method: 'delivery' | 'pickup';
   total_amount: number;
   delivery_address: string;
   latitude: number | null;
@@ -66,4 +69,17 @@ export type OrderItem = {
   quantity: number;
   unit_price: number;
   subtotal: number;
+};
+
+export type DeliveryRoute = {
+  id: string;
+  restaurant_id: string;
+  driver_id: string;
+  created_by: string;
+  status: 'assigned' | 'in_progress' | 'completed' | 'cancelled';
+  assigned_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
 };

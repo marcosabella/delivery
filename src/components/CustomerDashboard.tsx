@@ -2,9 +2,11 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, Restaurant, MenuItem, Order } from '../lib/supabase';
 import { useGeolocation } from '../hooks/useGeolocation';
-import { LogOut, Store, ShoppingCart, Clock, MapPin, Search, X, User, AlertCircle, CheckCircle } from 'lucide-react';
+import { addDefaultLocality } from '../lib/address';
+import { LogOut, Store, ShoppingCart, Clock, MapPin, Search, X, User, AlertCircle, CheckCircle, Home, Pencil, Menu } from 'lucide-react';
 
 type CartItem = MenuItem & { quantity: number };
+type DeliveryMethod = 'delivery' | 'pickup';
 
 export function CustomerDashboard() {
   const { profile, signOut } = useAuth();
@@ -13,19 +15,30 @@ export function CustomerDashboard() {
   const [selectedRestaurant, setSelectedRestaurant] = useState<Restaurant | null>(null);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [showCart, setShowCart] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
-  const [showOrders, setShowOrders] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [activeView, setActiveView] = useState<'restaurants' | 'cart' | 'orders'>('restaurants');
   const [searchQuery, setSearchQuery] = useState('');
+  const [deliveryMethod, setDeliveryMethod] = useState<DeliveryMethod>('delivery');
   const [deliveryAddress, setDeliveryAddress] = useState('');
   const [showLocationConfirm, setShowLocationConfirm] = useState(false);
   const [confirmedLocation, setConfirmedLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [addressSource, setAddressSource] = useState<'profile' | 'manual' | 'geolocation'>('profile');
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const didPrefillAddress = useRef(false);
 
   useEffect(() => {
     loadRestaurants();
     loadOrders();
   }, []);
+
+  useEffect(() => {
+    if (!didPrefillAddress.current && profile?.delivery_address) {
+      setDeliveryAddress(profile.delivery_address);
+      setAddressSource('profile');
+      didPrefillAddress.current = true;
+    }
+  }, [profile?.delivery_address]);
 
   useEffect(() => {
     if (selectedRestaurant) {
@@ -99,24 +112,50 @@ export function CustomerDashboard() {
     }
   }
 
-  async function handleConfirmLocation() {
-    if (!confirmedLocation) {
-      confirmedLocation ? setShowLocationConfirm(false) : setShowLocationConfirm(true);
-      return;
-    }
-
-    await handleCheckout();
+  function handleUseProfileAddress() {
+    if (!profile?.delivery_address) return;
+    setDeliveryAddress(profile.delivery_address);
+    setConfirmedLocation(null);
+    setAddressSource('profile');
   }
 
-  async function handleCheckout() {
+  function handleManualAddressChange(value: string) {
+    setDeliveryAddress(value);
+    setConfirmedLocation(null);
+    setAddressSource(value === profile?.delivery_address ? 'profile' : 'manual');
+  }
+
+  function handleDeliveryMethodChange(method: DeliveryMethod) {
+    setDeliveryMethod(method);
+    if (method === 'pickup') {
+      setConfirmedLocation(null);
+      setShowLocationConfirm(false);
+    }
+  }
+
+  async function handleCheckout(addressOverride?: string, locationOverride?: { lat: number; lng: number } | null) {
     if (!selectedRestaurant || cart.length === 0) {
       alert('Por favor agrega productos al carrito');
       return;
     }
 
-    if (!deliveryAddress.trim()) {
+    const isPickup = deliveryMethod === 'pickup';
+    const enteredAddress = isPickup
+      ? selectedRestaurant.address?.trim() || 'Retira en restaurante'
+      : (addressOverride ?? deliveryAddress).trim();
+    const locationToSave = isPickup
+      ? null
+      : locationOverride === undefined ? confirmedLocation : locationOverride;
+
+    if (!isPickup && !enteredAddress) {
       alert('Por favor ingresa una dirección de entrega');
       return;
+    }
+
+    let addressToSave = enteredAddress;
+    if (!isPickup) {
+      const currentLocation = location?.locality ? location : await getCurrentLocation();
+      addressToSave = addDefaultLocality(enteredAddress, currentLocation?.locality);
     }
 
     const total = getCartTotal();
@@ -127,10 +166,11 @@ export function CustomerDashboard() {
         customer_id: profile!.id,
         restaurant_id: selectedRestaurant.id,
         total_amount: total,
-        delivery_address: deliveryAddress,
+        delivery_method: deliveryMethod,
+        delivery_address: addressToSave,
         status: 'pending',
-        latitude: confirmedLocation?.lat ?? null,
-        longitude: confirmedLocation?.lng ?? null,
+        latitude: locationToSave?.lat ?? null,
+        longitude: locationToSave?.lng ?? null,
       })
       .select()
       .single();
@@ -156,8 +196,10 @@ export function CustomerDashboard() {
     }
 
     setCart([]);
-    setShowCart(false);
-    setDeliveryAddress('');
+    setActiveView('orders');
+    setDeliveryMethod('delivery');
+    setDeliveryAddress(profile?.delivery_address || '');
+    setAddressSource(profile?.delivery_address ? 'profile' : 'manual');
     setShowLocationConfirm(false);
     setConfirmedLocation(null);
     loadOrders();
@@ -186,71 +228,456 @@ export function CustomerDashboard() {
     cancelled: 'Cancelado',
   };
 
+  const customerNavItems = [
+    { id: 'restaurants' as const, label: 'Restaurantes', icon: Store },
+    { id: 'cart' as const, label: 'Carrito', icon: ShoppingCart },
+    { id: 'orders' as const, label: 'Pedidos', icon: Clock },
+  ];
+
   return (
-    <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white shadow-sm border-b sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center gap-3">
-              <Store className="w-6 h-6 text-orange-500" />
-              <span className="text-xl font-bold text-gray-800">Food Delivery</span>
-            </div>
-            <div className="flex items-center gap-4">
-              <button
-                onClick={() => setShowOrders(!showOrders)}
-                className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition"
-              >
-                <Clock className="w-4 h-4" />
-                Mis Pedidos
-              </button>
-              <button
-                onClick={() => setShowCart(!showCart)}
-                className="relative flex items-center gap-2 px-4 py-2 text-sm text-white bg-orange-500 hover:bg-orange-600 rounded-lg transition"
-              >
-                <ShoppingCart className="w-4 h-4" />
-                Carrito
-                {cart.length > 0 && (
-                  <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">
-                    {cart.length}
-                  </span>
-                )}
-              </button>
-              <button
-                onClick={() => setShowProfile(!showProfile)}
-                className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition"
-              >
-                <User className="w-4 h-4" />
-                Mi Perfil
-              </button>
-              <span className="text-sm text-gray-600">{profile?.full_name}</span>
-              <button
-                onClick={() => signOut()}
-                className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition"
-              >
-                <LogOut className="w-4 h-4" />
-                Salir
-              </button>
-            </div>
+    <div className="min-h-screen bg-slate-100 text-slate-900 lg:flex">
+      <aside className="hidden lg:flex fixed inset-y-0 left-0 z-40 w-60 flex-col border-r border-slate-200 bg-white">
+        <div className="flex h-14 items-center gap-3 border-b border-slate-200 px-4">
+          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-orange-500">
+            <Store className="h-4 w-4 text-white" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-slate-900">Food Delivery</p>
+            <p className="text-xs text-slate-500">Pedidos online</p>
           </div>
         </div>
-      </nav>
+        <nav className="flex-1 space-y-1 px-3 py-4">
+          {customerNavItems.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeView === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setActiveView(item.id)}
+                className={`relative flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition ${
+                  isActive ? 'bg-orange-50 text-orange-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                {item.label}
+                {item.id === 'cart' && cart.length > 0 && (
+                  <span className="ml-auto rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">{cart.length}</span>
+                )}
+              </button>
+            );
+          })}
+          <button
+            onClick={() => setShowProfile(!showProfile)}
+            className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+          >
+            <User className="h-4 w-4" />
+            Perfil
+          </button>
+        </nav>
+        <div className="border-t border-slate-200 p-3">
+          <p className="truncate px-2 pb-2 text-xs text-slate-500">{profile?.full_name}</p>
+          <button
+            onClick={() => signOut()}
+            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+          >
+            <LogOut className="h-4 w-4" />
+            Salir
+          </button>
+        </div>
+      </aside>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {!selectedRestaurant ? (
+      <div className="min-w-0 flex-1 lg:pl-60">
+        <div
+          className={`fixed inset-0 z-40 bg-slate-900/40 transition-opacity lg:hidden ${
+            isMobileSidebarOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
+          }`}
+          onClick={() => setIsMobileSidebarOpen(false)}
+          aria-hidden="true"
+        />
+        <aside
+          className={`fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col border-r border-slate-200 bg-white shadow-xl transition-transform duration-200 lg:hidden ${
+            isMobileSidebarOpen ? 'translate-x-0' : '-translate-x-full'
+          }`}
+          aria-label="Menu movil"
+        >
+          <div className="flex h-14 items-center justify-between gap-3 border-b border-slate-200 px-4">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-orange-500">
+                <Store className="h-4 w-4 text-white" />
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-slate-900">Food Delivery</p>
+                <p className="truncate text-xs text-slate-500">Pedidos online</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsMobileSidebarOpen(false)}
+              className="rounded-md p-2 text-slate-600 transition hover:bg-slate-100"
+              aria-label="Cerrar menu"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+          <nav className="flex-1 space-y-1 px-3 py-4">
+            {customerNavItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeView === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    setActiveView(item.id);
+                    setIsMobileSidebarOpen(false);
+                  }}
+                  className={`relative flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition ${
+                    isActive ? 'bg-orange-50 text-orange-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" />
+                  {item.label}
+                  {item.id === 'cart' && cart.length > 0 && (
+                    <span className="ml-auto rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">{cart.length}</span>
+                  )}
+                </button>
+              );
+            })}
+            <button
+              onClick={() => {
+                setShowProfile(!showProfile);
+                setIsMobileSidebarOpen(false);
+              }}
+              className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+            >
+              <User className="h-4 w-4" />
+              Perfil
+            </button>
+          </nav>
+          <div className="border-t border-slate-200 p-3">
+            <p className="truncate px-2 pb-2 text-xs text-slate-500">{profile?.full_name}</p>
+            <button
+              onClick={() => {
+                setIsMobileSidebarOpen(false);
+                signOut();
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+            >
+              <LogOut className="h-4 w-4" />
+              Salir
+            </button>
+          </div>
+        </aside>
+
+        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white lg:hidden">
+          <div className="flex min-h-14 items-center justify-between gap-3 px-3">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsMobileSidebarOpen(true)}
+                className="rounded-md p-2 text-slate-600 transition hover:bg-slate-100"
+                aria-label="Abrir menu"
+                aria-expanded={isMobileSidebarOpen}
+              >
+                <Menu className="h-5 w-5" />
+              </button>
+              <Store className="h-5 w-5 text-orange-500" />
+              <span className="text-sm font-semibold">Food Delivery</span>
+            </div>
+            <button onClick={() => signOut()} className="rounded-md p-2 text-slate-600 hover:bg-slate-100" aria-label="Salir">
+              <LogOut className="h-4 w-4" />
+            </button>
+          </div>
+        </header>
+
+        <main className="px-3 py-4 sm:px-5 lg:px-6 lg:py-5">
+        {activeView === 'cart' ? (
+          <div>
+            <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h1 className="mb-1 text-xl font-semibold text-gray-800">Tu Carrito</h1>
+                <p className="text-sm text-gray-600">Revisa productos, cantidades y datos de entrega antes de confirmar.</p>
+              </div>
+              <button
+                onClick={() => setActiveView('restaurants')}
+                className="self-start rounded-md border border-orange-200 px-3 py-2 text-sm font-medium text-orange-600 transition hover:bg-orange-50 sm:self-auto"
+              >
+                Seguir comprando
+              </button>
+            </div>
+
+            {cart.length === 0 ? (
+              <div className="rounded-lg bg-white p-8 text-center shadow-sm">
+                <ShoppingCart className="mx-auto mb-3 h-10 w-10 text-gray-300" />
+                <p className="text-gray-600">Tu carrito estÃ¡ vacÃ­o</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6">
+                <div className="overflow-hidden rounded-lg bg-white shadow-sm">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-100 text-gray-600">
+                        <tr>
+                          <th className="px-4 py-3 text-left font-semibold">Producto</th>
+                          <th className="px-4 py-3 text-left font-semibold">CategorÃ­a</th>
+                          <th className="px-4 py-3 text-right font-semibold">Precio</th>
+                          <th className="px-4 py-3 text-center font-semibold">Cantidad</th>
+                          <th className="px-4 py-3 text-right font-semibold">Subtotal</th>
+                          <th className="px-4 py-3 text-center font-semibold">Quitar</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {cart.map((item) => (
+                          <tr key={item.id} className="hover:bg-gray-50">
+                            <td className="px-4 py-4">
+                              <div className="font-semibold text-gray-800">{item.name}</div>
+                              <div className="text-gray-500 line-clamp-1">{item.description}</div>
+                            </td>
+                            <td className="px-4 py-4 text-gray-600">{item.category || '-'}</td>
+                            <td className="px-4 py-4 text-right font-medium text-gray-800">${item.price}</td>
+                            <td className="px-4 py-4">
+                              <div className="flex items-center justify-center gap-2">
+                                <button
+                                  onClick={() => updateQuantity(item.id, item.quantity - 1)}
+                                  className="w-8 h-8 border rounded-lg hover:bg-gray-100 transition"
+                                >
+                                  -
+                                </button>
+                                <span className="w-8 text-center font-medium">{item.quantity}</span>
+                                <button
+                                  onClick={() => updateQuantity(item.id, item.quantity + 1)}
+                                  className="w-8 h-8 border rounded-lg hover:bg-gray-100 transition"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </td>
+                            <td className="px-4 py-4 text-right font-semibold text-gray-800">
+                              ${(item.price * item.quantity).toFixed(2)}
+                            </td>
+                            <td className="px-4 py-4 text-center">
+                              <button
+                                onClick={() => removeFromCart(item.id)}
+                                className="inline-flex items-center justify-center w-8 h-8 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition"
+                                aria-label={`Quitar ${item.name}`}
+                              >
+                                <X className="w-5 h-5" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="h-fit rounded-lg bg-white p-4 shadow-sm">
+                  <h2 className="mb-4 text-lg font-semibold text-gray-800">Resumen</h2>
+                  <div className="space-y-3 mb-6 text-sm">
+                    <div className="flex justify-between text-gray-600">
+                      <span>Productos</span>
+                      <span>{cart.reduce((sum, item) => sum + item.quantity, 0)}</span>
+                    </div>
+                    <div className="flex justify-between text-xl font-bold border-t pt-3">
+                      <span>Total</span>
+                      <span className="text-orange-500">${getCartTotal().toFixed(2)}</span>
+                    </div>
+                  </div>
+
+                  <div className="mb-4 space-y-3">
+                    <label className="block text-sm font-medium text-gray-700">
+                      Modalidad
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleDeliveryMethodChange('delivery')}
+                        className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-3 text-sm font-semibold transition ${
+                          deliveryMethod === 'delivery'
+                            ? 'border-orange-500 bg-orange-50 text-orange-700'
+                            : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                        }`}
+                      >
+                        <Home className="w-4 h-4" />
+                        Entrega
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeliveryMethodChange('pickup')}
+                        className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-3 text-sm font-semibold transition ${
+                          deliveryMethod === 'pickup'
+                            ? 'border-orange-500 bg-orange-50 text-orange-700'
+                            : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                        }`}
+                      >
+                        <Store className="w-4 h-4" />
+                        Retira en restaurante
+                      </button>
+                    </div>
+                    {deliveryMethod === 'pickup' && (
+                      <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800">
+                        Vas a retirar el pedido en {selectedRestaurant?.name}. {selectedRestaurant?.address ? `Dirección: ${selectedRestaurant.address}` : 'El restaurante no tiene dirección cargada.'}
+                      </div>
+                    )}
+                  </div>
+
+                  {deliveryMethod === 'delivery' && (
+                  <div className="mb-4 space-y-3">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      DirecciÃ³n de entrega
+                    </label>
+                    <p className="text-xs text-gray-500 mb-2">
+                      {addressSource === 'profile'
+                        ? 'Se usa la dirección cargada en tu perfil.'
+                        : addressSource === 'geolocation'
+                          ? 'Se usará la dirección obtenida por ubicación.'
+                          : 'Esta dirección solo aplica a este pedido.'}
+                    </p>
+                    {profile?.delivery_address && deliveryAddress !== profile.delivery_address && (
+                      <button
+                        type="button"
+                        onClick={handleUseProfileAddress}
+                        className="mb-2 inline-flex items-center gap-1 px-3 py-2 text-xs font-medium text-orange-600 border border-orange-200 rounded-lg hover:bg-orange-50 transition"
+                      >
+                        <Home className="w-4 h-4" />
+                        Usar perfil
+                      </button>
+                    )}
+                    {!profile?.delivery_address && (
+                      <div className="rounded-lg bg-yellow-50 border border-yellow-200 p-3 text-sm text-yellow-800">
+                        No tenés una dirección cargada en tu perfil. Podés escribir una para este pedido o geolocalizarte.
+                      </div>
+                    )}
+                    <textarea
+                      value={deliveryAddress}
+                      onChange={(e) => handleManualAddressChange(e.target.value)}
+                      placeholder="Ingresa tu direcciÃ³n completa"
+                      rows={3}
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent text-base resize-none"
+                    />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmedLocation(null);
+                          setAddressSource('manual');
+                        }}
+                        className="w-full border border-gray-300 hover:bg-gray-50 text-gray-700 py-3 rounded-lg font-semibold transition flex items-center justify-center gap-2"
+                      >
+                        <Pencil className="w-4 h-4" />
+                        Escribir dirección
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRequestLocation}
+                        disabled={geoLoading}
+                        className="w-full border border-orange-200 bg-orange-50 hover:bg-orange-100 disabled:opacity-60 text-orange-700 py-3 rounded-lg font-semibold transition flex items-center justify-center gap-2"
+                      >
+                        <MapPin className="w-4 h-4" />
+                        {geoLoading ? 'Ubicando...' : 'Geolocalizar'}
+                      </button>
+                    </div>
+                    {geoError && (
+                      <p className="text-sm text-red-600">{geoError}</p>
+                    )}
+                  </div>
+                  )}
+
+                  <button
+                    onClick={() => handleCheckout()}
+                    className="w-full bg-orange-500 hover:bg-orange-600 text-white py-3 rounded-lg font-semibold transition flex items-center justify-center gap-2"
+                  >
+                    <ShoppingCart className="w-4 h-4" />
+                    Realizar pedido
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : activeView === 'orders' ? (
+          <div>
+            <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h1 className="mb-1 text-xl font-semibold text-gray-800">Mis Pedidos</h1>
+                <p className="text-gray-600">Consulta el estado, fecha, direcciÃ³n y total de cada pedido.</p>
+              </div>
+              <button
+                onClick={() => setActiveView('restaurants')}
+                className="self-start sm:self-auto px-4 py-2 text-sm font-medium text-orange-600 border border-orange-200 rounded-lg hover:bg-orange-50 transition"
+              >
+                Ver restaurantes
+              </button>
+            </div>
+
+            {orders.length === 0 ? (
+              <div className="rounded-lg bg-white p-8 text-center shadow-sm">
+                <Clock className="mx-auto mb-3 h-10 w-10 text-gray-300" />
+                <p className="text-gray-600">No tienes pedidos aÃºn</p>
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-lg bg-white shadow-sm">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-100 text-gray-600">
+                      <tr>
+                        <th className="px-4 py-3 text-left font-semibold">Pedido</th>
+                        <th className="px-4 py-3 text-left font-semibold">Fecha</th>
+                        <th className="px-4 py-3 text-left font-semibold">DirecciÃ³n</th>
+                        <th className="px-4 py-3 text-center font-semibold">Estado</th>
+                        <th className="px-4 py-3 text-right font-semibold">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {orders.map((order) => (
+                        <tr key={order.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-4 font-semibold text-gray-800">#{order.id.slice(0, 8)}</td>
+                          <td className="px-4 py-4 text-gray-600 whitespace-nowrap">
+                            {new Date(order.created_at).toLocaleString()}
+                          </td>
+                          <td className="px-4 py-4 text-gray-600 min-w-64">
+                            <div className="flex items-center gap-2">
+                              {order.delivery_method === 'pickup' ? (
+                                <Store className="w-4 h-4 shrink-0 text-gray-400" />
+                              ) : (
+                                <MapPin className="w-4 h-4 shrink-0 text-gray-400" />
+                              )}
+                              <span>
+                                {order.delivery_method === 'pickup'
+                                  ? `Retira en restaurante${order.delivery_address ? ` - ${order.delivery_address}` : ''}`
+                                  : order.delivery_address}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-4 text-center">
+                            <span className={`inline-block text-xs px-3 py-1 rounded-full font-medium ${statusColors[order.status]}`}>
+                              {statusLabels[order.status]}
+                            </span>
+                          </td>
+                          <td className="px-4 py-4 text-right text-lg font-bold text-orange-500">
+                            ${order.total_amount}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : !selectedRestaurant ? (
           <div>
             <div className="mb-8">
               <h1 className="text-4xl font-bold text-gray-800 mb-2">Descubre restaurantes increíbles</h1>
               <p className="text-gray-600">Pide tu comida favorita desde la comodidad de tu hogar</p>
             </div>
 
-            <div className="relative mb-8">
-              <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+            <div className="relative mb-4">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
                 placeholder="Buscar restaurantes..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-12 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                className="w-full rounded-md border border-gray-300 py-2 pl-9 pr-3 text-sm focus:border-transparent focus:ring-2 focus:ring-orange-500"
               />
             </div>
 
@@ -260,18 +687,18 @@ export function CustomerDashboard() {
                 <p className="text-gray-600">No se encontraron restaurantes</p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {filteredRestaurants.map((restaurant) => (
                   <div
                     key={restaurant.id}
                     onClick={() => setSelectedRestaurant(restaurant)}
-                    className="bg-white rounded-xl shadow-sm hover:shadow-lg transition cursor-pointer overflow-hidden group"
+                    className="group cursor-pointer overflow-hidden rounded-lg bg-white shadow-sm transition hover:shadow-md"
                   >
-                    <div className="h-48 bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center">
-                      <Store className="w-16 h-16 text-white opacity-80" />
+                    <div className="flex h-28 items-center justify-center bg-slate-100">
+                      <Store className="h-8 w-8 text-slate-400" />
                     </div>
-                    <div className="p-6">
-                      <h3 className="text-xl font-bold text-gray-800 mb-2 group-hover:text-orange-500 transition">
+                    <div className="p-4">
+                      <h3 className="mb-1 font-semibold text-gray-800 transition group-hover:text-orange-500">
                         {restaurant.name}
                       </h3>
                       <p className="text-gray-600 text-sm mb-3 line-clamp-2">{restaurant.description}</p>
@@ -294,10 +721,10 @@ export function CustomerDashboard() {
               ← Volver a restaurantes
             </button>
 
-            <div className="bg-white rounded-xl shadow-sm p-8 mb-8">
+            <div className="mb-4 rounded-lg bg-white p-4 shadow-sm">
               <div className="flex items-start justify-between">
                 <div>
-                  <h1 className="text-3xl font-bold text-gray-800 mb-2">{selectedRestaurant.name}</h1>
+                  <h1 className="mb-1 text-xl font-semibold text-gray-800">{selectedRestaurant.name}</h1>
                   <p className="text-gray-600 mb-2">{selectedRestaurant.description}</p>
                   <div className="flex items-center text-sm text-gray-500">
                     <MapPin className="w-4 h-4 mr-1" />
@@ -308,17 +735,17 @@ export function CustomerDashboard() {
             </div>
 
             {menuItems.length === 0 ? (
-              <div className="text-center py-12 bg-white rounded-xl">
+              <div className="rounded-lg bg-white py-8 text-center">
                 <p className="text-gray-600">Este restaurante no tiene elementos en el menú aún</p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {menuItems.map((item) => (
-                  <div key={item.id} className="bg-white rounded-xl shadow-sm hover:shadow-md transition overflow-hidden">
-                    <div className="h-40 bg-gradient-to-br from-orange-300 to-orange-500 flex items-center justify-center">
-                      <Store className="w-12 h-12 text-white opacity-60" />
+                  <div key={item.id} className="overflow-hidden rounded-lg bg-white shadow-sm transition hover:shadow-md">
+                    <div className="flex h-24 items-center justify-center bg-slate-100">
+                      <Store className="h-7 w-7 text-slate-400" />
                     </div>
-                    <div className="p-5">
+                    <div className="p-4">
                       <div className="flex justify-between items-start mb-2">
                         <h3 className="font-bold text-gray-800 flex-1">{item.name}</h3>
                         {item.category && (
@@ -329,7 +756,7 @@ export function CustomerDashboard() {
                       </div>
                       <p className="text-sm text-gray-600 mb-4 line-clamp-2">{item.description}</p>
                       <div className="flex justify-between items-center">
-                        <span className="text-2xl font-bold text-orange-500">${item.price}</span>
+                        <span className="text-lg font-semibold text-orange-500">${item.price}</span>
                         <button
                           onClick={() => addToCart(item)}
                           className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium transition"
@@ -344,136 +771,8 @@ export function CustomerDashboard() {
             )}
           </div>
         )}
+        </main>
       </div>
-
-      {showCart && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="sticky top-0 bg-white border-b p-6 flex justify-between items-center">
-              <h2 className="text-2xl font-bold text-gray-800">Tu Carrito</h2>
-              <button onClick={() => setShowCart(false)} className="text-gray-500 hover:text-gray-700">
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-
-            <div className="p-6">
-              {cart.length === 0 ? (
-                <div className="text-center py-12">
-                  <ShoppingCart className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-                  <p className="text-gray-600">Tu carrito está vacío</p>
-                </div>
-              ) : (
-                <div>
-                  <div className="space-y-4 mb-6">
-                    {cart.map((item) => (
-                      <div key={item.id} className="flex items-center gap-4 p-4 border rounded-lg">
-                        <div className="flex-1">
-                          <h3 className="font-semibold text-gray-800">{item.name}</h3>
-                          <p className="text-sm text-gray-600">${item.price}</p>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <button
-                            onClick={() => updateQuantity(item.id, item.quantity - 1)}
-                            className="w-8 h-8 border rounded-lg hover:bg-gray-100 transition"
-                          >
-                            -
-                          </button>
-                          <span className="w-8 text-center font-medium">{item.quantity}</span>
-                          <button
-                            onClick={() => updateQuantity(item.id, item.quantity + 1)}
-                            className="w-8 h-8 border rounded-lg hover:bg-gray-100 transition"
-                          >
-                            +
-                          </button>
-                        </div>
-                        <button
-                          onClick={() => removeFromCart(item.id)}
-                          className="text-red-500 hover:text-red-700"
-                        >
-                          <X className="w-5 h-5" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="border-t pt-4 mb-4">
-                    <div className="flex justify-between text-xl font-bold mb-6">
-                      <span>Total:</span>
-                      <span className="text-orange-500">${getCartTotal().toFixed(2)}</span>
-                    </div>
-
-                    <div className="mb-4">
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Dirección de entrega
-                      </label>
-                      <input
-                        type="text"
-                        value={deliveryAddress}
-                        onChange={(e) => setDeliveryAddress(e.target.value)}
-                        placeholder="Ingresa tu dirección completa"
-                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-                      />
-                    </div>
-
-                    <button
-                      onClick={handleRequestLocation}
-                      className="w-full bg-orange-500 hover:bg-orange-600 text-white py-3 rounded-lg font-semibold transition flex items-center justify-center gap-2"
-                    >
-                      <MapPin className="w-4 h-4" />
-                      {geoLoading ? 'Obteniendo ubicación...' : 'Confirmar ubicación y realizar pedido'}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showOrders && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="sticky top-0 bg-white border-b p-6 flex justify-between items-center">
-              <h2 className="text-2xl font-bold text-gray-800">Mis Pedidos</h2>
-              <button onClick={() => setShowOrders(false)} className="text-gray-500 hover:text-gray-700">
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-
-            <div className="p-6">
-              {orders.length === 0 ? (
-                <div className="text-center py-12">
-                  <Clock className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-                  <p className="text-gray-600">No tienes pedidos aún</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {orders.map((order) => (
-                    <div key={order.id} className="border rounded-lg p-5 hover:shadow-md transition">
-                      <div className="flex justify-between items-start mb-3">
-                        <div>
-                          <p className="font-medium text-gray-800">Pedido #{order.id.slice(0, 8)}</p>
-                          <p className="text-sm text-gray-600">{new Date(order.created_at).toLocaleString()}</p>
-                          <div className="flex items-center text-sm text-gray-600 mt-1">
-                            <MapPin className="w-4 h-4 mr-1" />
-                            {order.delivery_address}
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-2xl font-bold text-orange-500">${order.total_amount}</p>
-                          <span className={`inline-block text-xs px-3 py-1 rounded-full font-medium mt-2 ${statusColors[order.status]}`}>
-                            {statusLabels[order.status]}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
 
       {showProfile && profile && (
         <ProfileEditForm profile={profile} onClose={() => setShowProfile(false)} />
@@ -485,13 +784,14 @@ export function CustomerDashboard() {
           geoError={geoError}
           onConfirm={(address) => {
             setDeliveryAddress(address);
+            setAddressSource('geolocation');
             setShowLocationConfirm(false);
-            handleConfirmLocation();
           }}
           onCancel={() => setShowLocationConfirm(false)}
           onUseManual={() => {
             setShowLocationConfirm(false);
             setConfirmedLocation(null);
+            setAddressSource('manual');
           }}
         />
       )}
@@ -514,7 +814,7 @@ function lat2tile(lat: number, zoom: number) {
 function MapView({ latitude, longitude }: { latitude: number; longitude: number }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [tilesLoaded, setTilesLoaded] = useState(false);
-  const [loadError, setLoadError] = useState(false);
+  const [loadError] = useState(false);
 
   const ZOOM = 16;
   const TILE_SIZE = 256;

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, Profile, Restaurant } from '../lib/supabase';
-import { LogOut, Users, Store, Plus, Trash2, ToggleLeft as Toggle2, Search, X, Eye, EyeOff, CreditCard as Edit } from 'lucide-react';
+import { LogOut, Users, Store, Plus, Trash2, Search, Eye, EyeOff, CreditCard as Edit, Menu, X } from 'lucide-react';
 
 export function AdminDashboard() {
   const { profile, signOut } = useAuth();
@@ -13,6 +13,7 @@ export function AdminDashboard() {
   const [editingRestaurant, setEditingRestaurant] = useState<Restaurant | null>(null);
   const [editingUser, setEditingUser] = useState<Profile | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   useEffect(() => {
     loadRestaurants();
@@ -55,8 +56,16 @@ export function AdminDashboard() {
 
   async function handleDeleteUser(id: string) {
     if (confirm('¿Estás seguro de que deseas eliminar este usuario?')) {
-      await supabase.from('profiles').delete().eq('id', id);
-      loadUsers();
+      const { error } = await supabase.functions.invoke('admin-users', {
+        body: { action: 'delete', userId: id },
+      });
+
+      if (error) {
+        alert(`No se pudo eliminar el usuario: ${error.message}`);
+        return;
+      }
+
+      await loadUsers();
     }
   }
 
@@ -73,100 +82,187 @@ export function AdminDashboard() {
     customer: 'Cliente',
     restaurant_owner: 'Dueño de Restaurante',
     admin: 'Administrador',
+    driver: 'Repartidor',
   };
 
+  const adminNavItems = [
+    { id: 'restaurants' as const, label: 'Restaurantes', icon: Store },
+    { id: 'users' as const, label: 'Usuarios', icon: Users },
+  ];
+
   return (
-    <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white shadow-sm border-b sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center gap-3">
-              <div className="bg-orange-500 p-2 rounded-lg">
-                <Store className="w-6 h-6 text-white" />
-              </div>
-              <span className="text-xl font-bold text-gray-800">Panel Admin</span>
-            </div>
-            <div className="flex items-center gap-4">
-              <span className="text-sm text-gray-600">{profile?.full_name}</span>
-              <button
-                onClick={() => signOut()}
-                className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition"
-              >
-                <LogOut className="w-4 h-4" />
-                Salir
-              </button>
-            </div>
+    <div className="min-h-screen bg-slate-100 text-slate-900 lg:flex">
+      <aside className="hidden lg:flex fixed inset-y-0 left-0 z-40 w-60 flex-col border-r border-slate-200 bg-white">
+        <div className="flex h-14 items-center gap-3 border-b border-slate-200 px-4">
+          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-orange-500">
+            <Store className="h-4 w-4 text-white" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-slate-900">Panel Admin</p>
+            <p className="text-xs text-slate-500">Sistema pedidos</p>
           </div>
         </div>
-      </nav>
-
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="flex gap-4 mb-8">
+        <nav className="flex-1 space-y-1 px-3 py-4">
+          {adminNavItems.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => {
+                  setActiveTab(item.id);
+                  setSearchQuery('');
+                }}
+                className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition ${
+                  isActive ? 'bg-orange-50 text-orange-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                {item.label}
+              </button>
+            );
+          })}
+        </nav>
+        <div className="border-t border-slate-200 p-3">
+          <p className="truncate px-2 pb-2 text-xs text-slate-500">{profile?.full_name}</p>
           <button
-            onClick={() => {
-              setActiveTab('restaurants');
-              setSearchQuery('');
-            }}
-            className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition ${
-              activeTab === 'restaurants'
-                ? 'bg-orange-500 text-white'
-                : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-            }`}
+            onClick={() => signOut()}
+            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
           >
-            <Store className="w-5 h-5" />
-            Restaurantes
-          </button>
-          <button
-            onClick={() => {
-              setActiveTab('users');
-              setSearchQuery('');
-            }}
-            className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition ${
-              activeTab === 'users'
-                ? 'bg-orange-500 text-white'
-                : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-            }`}
-          >
-            <Users className="w-5 h-5" />
-            Usuarios
+            <LogOut className="h-4 w-4" />
+            Salir
           </button>
         </div>
+      </aside>
+
+      <div className="min-w-0 flex-1 lg:pl-60">
+        <div
+          className={`fixed inset-0 z-40 bg-slate-900/40 transition-opacity lg:hidden ${
+            isMobileSidebarOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
+          }`}
+          onClick={() => setIsMobileSidebarOpen(false)}
+          aria-hidden="true"
+        />
+        <aside
+          className={`fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col border-r border-slate-200 bg-white shadow-xl transition-transform duration-200 lg:hidden ${
+            isMobileSidebarOpen ? 'translate-x-0' : '-translate-x-full'
+          }`}
+          aria-label="Menu movil"
+        >
+          <div className="flex h-14 items-center justify-between gap-3 border-b border-slate-200 px-4">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-orange-500">
+                <Store className="h-4 w-4 text-white" />
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-slate-900">Panel Admin</p>
+                <p className="truncate text-xs text-slate-500">Sistema pedidos</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsMobileSidebarOpen(false)}
+              className="rounded-md p-2 text-slate-600 transition hover:bg-slate-100"
+              aria-label="Cerrar menu"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+          <nav className="flex-1 space-y-1 px-3 py-4">
+            {adminNavItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    setActiveTab(item.id);
+                    setSearchQuery('');
+                    setIsMobileSidebarOpen(false);
+                  }}
+                  className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition ${
+                    isActive ? 'bg-orange-50 text-orange-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" />
+                  {item.label}
+                </button>
+              );
+            })}
+          </nav>
+          <div className="border-t border-slate-200 p-3">
+            <p className="truncate px-2 pb-2 text-xs text-slate-500">{profile?.full_name}</p>
+            <button
+              onClick={() => {
+                setIsMobileSidebarOpen(false);
+                signOut();
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+            >
+              <LogOut className="h-4 w-4" />
+              Salir
+            </button>
+          </div>
+        </aside>
+
+        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white lg:hidden">
+          <div className="flex min-h-14 items-center justify-between gap-3 px-3">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsMobileSidebarOpen(true)}
+                className="rounded-md p-2 text-slate-600 transition hover:bg-slate-100"
+                aria-label="Abrir menu"
+                aria-expanded={isMobileSidebarOpen}
+              >
+                <Menu className="h-5 w-5" />
+              </button>
+              <Store className="h-5 w-5 text-orange-500" />
+              <span className="text-sm font-semibold">Panel Admin</span>
+            </div>
+            <button onClick={() => signOut()} className="rounded-md p-2 text-slate-600 hover:bg-slate-100" aria-label="Salir">
+              <LogOut className="h-4 w-4" />
+            </button>
+          </div>
+        </header>
+
+        <main className="px-3 py-4 sm:px-5 lg:px-6 lg:py-5">
 
         {activeTab === 'restaurants' && (
           <div>
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
               <h2 className="text-2xl font-bold text-gray-800">Gestión de Restaurantes</h2>
               <button
                 onClick={() => setShowCreateRestaurant(true)}
-                className="flex items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium transition"
+                className="flex items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white px-3 py-2 rounded-md text-sm font-medium transition"
               >
-                <Plus className="w-5 h-5" />
+                <Plus className="w-4 h-4" />
                 Nuevo Restaurante
               </button>
             </div>
 
-            <div className="mb-6">
+            <div className="mb-4">
               <div className="relative">
-                <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                 <input
                   type="text"
                   placeholder="Buscar restaurante..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-12 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                  className="w-full rounded-md border border-gray-300 py-2 pl-9 pr-3 text-sm focus:border-transparent focus:ring-2 focus:ring-orange-500"
                 />
               </div>
             </div>
 
             {filteredRestaurants.length === 0 ? (
-              <div className="bg-white rounded-xl shadow-sm p-12 text-center">
-                <Store className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+              <div className="rounded-lg bg-white p-8 text-center shadow-sm">
+                <Store className="mx-auto mb-3 h-10 w-10 text-gray-300" />
                 <p className="text-gray-600">No hay restaurantes registrados</p>
               </div>
             ) : (
-              <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+              <div className="overflow-hidden rounded-lg bg-white shadow-sm">
                 <div className="overflow-x-auto">
-                  <table className="w-full">
+                  <table className="w-full text-sm">
                     <thead className="bg-gray-50 border-b">
                       <tr>
                         <th className="px-6 py-3 text-left text-sm font-semibold text-gray-700">Nombre</th>
@@ -336,6 +432,7 @@ export function AdminDashboard() {
             )}
           </div>
         )}
+        </main>
       </div>
 
       {showCreateRestaurant && (
@@ -364,6 +461,7 @@ export function AdminDashboard() {
           onClose={() => {
             setShowCreateUser(false);
             loadUsers();
+            loadRestaurants();
           }}
         />
       )}
@@ -535,7 +633,7 @@ function EditUserModal({ user, onClose }: { user: Profile; onClose: () => void }
   const [formData, setFormData] = useState({
     fullName: user.full_name,
     phone: user.phone || '',
-    role: user.role as 'customer' | 'restaurant_owner' | 'admin',
+    role: user.role as Profile['role'],
   });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -628,12 +726,13 @@ function EditUserModal({ user, onClose }: { user: Profile; onClose: () => void }
               required
               disabled={loading}
               value={formData.role}
-              onChange={(e) => setFormData({ ...formData, role: e.target.value as any })}
+              onChange={(e) => setFormData({ ...formData, role: e.target.value as Profile['role'] })}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent disabled:bg-gray-100"
             >
               <option value="customer">Cliente</option>
               <option value="restaurant_owner">Dueño de Restaurante</option>
               <option value="admin">Administrador</option>
+              <option value="driver">Repartidor</option>
             </select>
           </div>
 
@@ -820,12 +919,13 @@ function CreateUserModal({ onClose }: { onClose: () => void }) {
     password: '',
     fullName: '',
     phone: '',
-    role: 'restaurant_owner' as 'customer' | 'restaurant_owner' | 'admin',
+    role: 'restaurant_owner' as Profile['role'],
+    restaurantName: '',
+    restaurantAddress: '',
   });
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const { signUp } = useAuth();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -845,13 +945,26 @@ function CreateUserModal({ onClose }: { onClose: () => void }) {
         return;
       }
 
-      await signUp(
-        formData.email.trim(),
-        formData.password,
-        formData.fullName.trim(),
-        formData.role,
-        formData.phone.trim() || undefined
-      );
+      if (formData.role === 'restaurant_owner' && !formData.restaurantName.trim()) {
+        setError('El nombre del restaurante es requerido');
+        setLoading(false);
+        return;
+      }
+
+      const { error: createError } = await supabase.functions.invoke('admin-users', {
+        body: {
+          action: 'create',
+          email: formData.email.trim(),
+          password: formData.password,
+          fullName: formData.fullName.trim(),
+          phone: formData.phone.trim() || null,
+          role: formData.role,
+          restaurantName: formData.restaurantName.trim() || null,
+          restaurantAddress: formData.restaurantAddress.trim() || null,
+        },
+      });
+
+      if (createError) throw createError;
 
       onClose();
     } catch (err) {
@@ -935,7 +1048,7 @@ function CreateUserModal({ onClose }: { onClose: () => void }) {
               required
               disabled={loading}
               value={formData.role}
-              onChange={(e) => setFormData({ ...formData, role: e.target.value as any })}
+              onChange={(e) => setFormData({ ...formData, role: e.target.value as Profile['role'] })}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent disabled:bg-gray-100"
             >
               <option value="customer">Cliente</option>
@@ -943,6 +1056,33 @@ function CreateUserModal({ onClose }: { onClose: () => void }) {
               <option value="admin">Administrador</option>
             </select>
           </div>
+
+          {formData.role === 'restaurant_owner' && (
+            <div className="space-y-4 rounded-lg border border-orange-200 bg-orange-50 p-4">
+              <p className="text-sm font-medium text-orange-900">Restaurante asignado</p>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Nombre del restaurante *</label>
+                <input
+                  type="text"
+                  required
+                  disabled={loading}
+                  value={formData.restaurantName}
+                  onChange={(e) => setFormData({ ...formData, restaurantName: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent disabled:bg-gray-100"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Dirección del restaurante</label>
+                <input
+                  type="text"
+                  disabled={loading}
+                  value={formData.restaurantAddress}
+                  onChange={(e) => setFormData({ ...formData, restaurantAddress: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent disabled:bg-gray-100"
+                />
+              </div>
+            </div>
+          )}
 
           <div className="flex gap-3">
             <button

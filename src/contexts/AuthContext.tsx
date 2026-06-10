@@ -6,94 +6,206 @@ type AuthContextType = {
   user: User | null;
   profile: Profile | null;
   loading: boolean;
-  signUp: (email: string, password: string, fullName: string, role: 'customer' | 'restaurant_owner' | 'admin', phone?: string) => Promise<void>;
+  authError: string | null;
+  retryProfile: () => Promise<void>;
+  signUp: (email: string, password: string, fullName: string, phone?: string) => Promise<{ requiresEmailConfirmation: boolean }>;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const BOOTSTRAP_ADMIN_EMAIL = 'admin@admin.com';
+const PROFILE_LOAD_RETRY_DELAYS_MS = [500, 1500];
+
+function isNetworkError(error: unknown) {
+  if (error instanceof Error) {
+    return /failed to fetch|networkerror|load failed/i.test(error.message);
+  }
+
+  if (error && typeof error === 'object' && 'message' in error) {
+    return /failed to fetch|networkerror|load failed/i.test(String(error.message));
+  }
+
+  return false;
+}
+
+async function wait(milliseconds: number) {
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message;
+
+  if (error && typeof error === 'object') {
+    const { message, code, details, hint } = error as Record<string, unknown>;
+    const parts = [message, code && `Codigo: ${code}`, details, hint].filter(
+      (part): part is string => typeof part === 'string' && part.length > 0,
+    );
+
+    if (parts.length > 0) return parts.join(' - ');
+  }
+
+  return fallback;
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    let isMounted = true;
+
+    async function initializeSession() {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        if (!isMounted) return;
+
+        setUser(session?.user ?? null);
+        if (session?.user) {
+          await loadProfile(session.user);
+        } else {
+          setLoading(false);
+        }
+      } catch (error) {
+        if (!isMounted) return;
+        console.error('Error initializing session:', error);
+        setAuthError(getErrorMessage(error, 'No se pudo iniciar la sesion'));
+        setLoading(false);
+      }
+    }
+
+    void initializeSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!isMounted) return;
+
       setUser(session?.user ?? null);
       if (session?.user) {
-        loadProfile(session.user.id);
+        setLoading(true);
+        // Run database queries after the auth callback releases its internal lock.
+        setTimeout(() => {
+          if (isMounted) void loadProfile(session.user);
+        }, 0);
       } else {
+        setProfile(null);
+        setAuthError(null);
         setLoading(false);
       }
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      (async () => {
-        setUser(session?.user ?? null);
-        if (session?.user) {
-          await loadProfile(session.user.id);
-        } else {
-          setProfile(null);
-          setLoading(false);
-        }
-      })();
-    });
-
-    return () => subscription.unsubscribe();
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
-  async function loadProfile(userId: string) {
+  async function loadProfile(authUser: User) {
+    setLoading(true);
+    setAuthError(null);
+
     try {
-      const { data, error } = await supabase
+      const fetchProfile = () => supabase
         .from('profiles')
         .select('*')
-        .eq('id', userId)
+        .eq('id', authUser.id)
         .maybeSingle();
 
+      let profileResult = await fetchProfile();
+      for (const retryDelay of PROFILE_LOAD_RETRY_DELAYS_MS) {
+        if (!profileResult.error || !isNetworkError(profileResult.error)) break;
+        await wait(retryDelay);
+        profileResult = await fetchProfile();
+      }
+
+      const { data, error } = profileResult;
+
       if (error) throw error;
-      setProfile(data);
+
+      if (data) {
+        setProfile(data);
+        return;
+      }
+
+      const recoveredProfile = await createMissingProfile(authUser);
+      setProfile(recoveredProfile);
     } catch (error) {
       console.error('Error loading profile:', error);
+      setProfile(null);
+      setAuthError(
+        isNetworkError(error)
+          ? 'No se pudo conectar con Supabase. Verifica la conexion a Internet y vuelve a intentar.'
+          : getErrorMessage(error, 'No se pudo cargar el perfil del usuario'),
+      );
     } finally {
       setLoading(false);
     }
   }
 
-  async function signUp(email: string, password: string, fullName: string, role: 'customer' | 'restaurant_owner' | 'admin', phone?: string) {
+  async function createMissingProfile(authUser: User) {
+    const metadataRole = authUser.app_metadata?.role || authUser.user_metadata?.role;
+    const role: Profile['role'] =
+      authUser.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL
+        ? 'admin'
+        : metadataRole === 'admin' || metadataRole === 'restaurant_owner' || metadataRole === 'driver'
+          ? metadataRole
+          : 'customer';
+
+    const fullName =
+      typeof authUser.user_metadata?.full_name === 'string' && authUser.user_metadata.full_name.trim()
+        ? authUser.user_metadata.full_name.trim()
+        : authUser.email || 'Usuario';
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .insert({
+        id: authUser.id,
+        email: authUser.email || '',
+        full_name: fullName,
+        role,
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
+  async function signUp(email: string, password: string, fullName: string, phone?: string) {
     const { data: authData, error: authError } = await supabase.auth.signUp({
       email,
       password,
+      options: {
+        emailRedirectTo: window.location.origin,
+        data: {
+          full_name: fullName,
+          role: 'customer',
+          phone: phone || null,
+        },
+      },
     });
 
     if (authError) throw authError;
     if (!authData.user) throw new Error('No user returned');
 
-    const { error: profileError } = await supabase
-      .from('profiles')
-      .insert({
-        id: authData.user.id,
-        email,
-        full_name: fullName,
-        role,
-        phone: phone || null,
-      });
+    if (authData.session) {
+      await loadProfile(authData.user);
+    }
 
-    if (profileError) throw profileError;
+    return { requiresEmailConfirmation: !authData.session };
   }
 
   async function signIn(email: string, password: string) {
-    const { data, error } = await supabase.auth.signInWithPassword({
+    setAuthError(null);
+
+    const { error } = await supabase.auth.signInWithPassword({
       email,
       password,
     });
 
     if (error) throw error;
-
-    if (data.user) {
-      setUser(data.user);
-      await loadProfile(data.user.id);
-    }
   }
 
   async function signOut() {
@@ -101,8 +213,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (error) throw error;
   }
 
+  async function retryProfile() {
+    if (user) await loadProfile(user);
+  }
+
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signUp, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, profile, loading, authError, retryProfile, signUp, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   );

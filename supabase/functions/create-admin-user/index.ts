@@ -22,6 +22,7 @@ Deno.serve(async (req: Request) => {
       throw new Error("Missing Supabase environment variables");
     }
 
+    const adminEmail = "admin@admin.com";
     const response = await fetch(`${supabaseUrl}/auth/v1/admin/users`, {
       method: "POST",
       headers: {
@@ -30,7 +31,7 @@ Deno.serve(async (req: Request) => {
         "apikey": supabaseServiceRoleKey,
       },
       body: JSON.stringify({
-        email: "admin@admin.com",
+        email: adminEmail,
         password: "admin",
         email_confirm: true,
         user_metadata: {
@@ -44,40 +45,43 @@ Deno.serve(async (req: Request) => {
 
     if (!response.ok) {
       const error = await response.json();
-      console.error("Error creating user:", error);
-      return new Response(
-        JSON.stringify({ error: error }),
-        {
-          status: response.status,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
+      const message = JSON.stringify(error).toLowerCase();
+      const userAlreadyExists =
+        response.status === 422 &&
+        (message.includes("already") || message.includes("registered") || message.includes("exists"));
+
+      if (!userAlreadyExists) {
+        console.error("Error creating user:", error);
+        return new Response(
+          JSON.stringify({ error: error }),
+          {
+            status: response.status,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
+      }
     }
 
-    const userData = await response.json();
-
-    if (!userData.user || !userData.user.id) {
-      throw new Error("User creation response missing user id");
-    }
-
-    const profileResponse = await fetch(`${supabaseUrl}/rest/v1/profiles`, {
+    const repairResponse = await fetch(`${supabaseUrl}/rest/v1/rpc/repair_bootstrap_admin_profile`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${supabaseServiceRoleKey}`,
         "apikey": supabaseServiceRoleKey,
       },
-      body: JSON.stringify({
-        id: userData.user.id,
-        email: "admin@admin.com",
-        full_name: "Administrador",
-        role: "admin",
-      }),
+      body: JSON.stringify({}),
     });
 
-    if (!profileResponse.ok) {
-      const error = await profileResponse.json();
-      console.error("Error creating profile:", error);
+    if (!repairResponse.ok) {
+      const error = await repairResponse.json();
+      console.error("Error repairing admin profile:", error);
+      return new Response(
+        JSON.stringify({ error: error }),
+        {
+          status: repairResponse.status,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     return new Response(
