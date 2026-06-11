@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { supabase, Restaurant, MenuItem, Order } from '../lib/supabase';
+import { supabase, Restaurant, MenuItem, Order, Profile } from '../lib/supabase';
 import { useGeolocation } from '../hooks/useGeolocation';
 import { addDefaultLocality } from '../lib/address';
 import { LogOut, Store, ShoppingCart, Clock, MapPin, Search, X, User, AlertCircle, CheckCircle, Home, Pencil, Menu } from 'lucide-react';
@@ -8,14 +8,32 @@ import { MessageModal } from './MessageModal';
 
 type CartItem = MenuItem & { quantity: number };
 type DeliveryMethod = 'delivery' | 'pickup';
+const CART_STORAGE_KEY = 'food-delivery-cart';
+const RESTAURANT_STORAGE_KEY = 'food-delivery-restaurant';
+
+function readStoredCart(): CartItem[] {
+  try {
+    return JSON.parse(localStorage.getItem(CART_STORAGE_KEY) || '[]') as CartItem[];
+  } catch {
+    return [];
+  }
+}
+
+function readStoredRestaurant(): Restaurant | null {
+  try {
+    return JSON.parse(localStorage.getItem(RESTAURANT_STORAGE_KEY) || 'null') as Restaurant | null;
+  } catch {
+    return null;
+  }
+}
 
 export function CustomerDashboard() {
   const { profile, signOut } = useAuth();
   const { getCurrentLocation, location, error: geoError, loading: geoLoading } = useGeolocation();
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
-  const [selectedRestaurant, setSelectedRestaurant] = useState<Restaurant | null>(null);
+  const [selectedRestaurant, setSelectedRestaurant] = useState<Restaurant | null>(readStoredRestaurant);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const [cart, setCart] = useState<CartItem[]>(readStoredCart);
   const [orders, setOrders] = useState<Order[]>([]);
   const [showProfile, setShowProfile] = useState(false);
   const [activeView, setActiveView] = useState<'restaurants' | 'cart' | 'orders'>('restaurants');
@@ -198,6 +216,8 @@ export function CustomerDashboard() {
     }
 
     setCart([]);
+    localStorage.removeItem(CART_STORAGE_KEY);
+    localStorage.removeItem(RESTAURANT_STORAGE_KEY);
     setActiveView('orders');
     setDeliveryMethod('delivery');
     setDeliveryAddress(profile?.delivery_address || '');
@@ -1054,7 +1074,7 @@ function LocationConfirmationModal({
   );
 }
 
-function ProfileEditForm({ profile, onClose }: { profile: any; onClose: () => void }) {
+function ProfileEditForm({ profile, onClose }: { profile: Profile; onClose: () => void }) {
   const [formData, setFormData] = useState({
     full_name: profile.full_name || '',
     phone: profile.phone || '',

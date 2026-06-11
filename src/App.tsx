@@ -1,9 +1,8 @@
 import { AuthProvider, useAuth } from './contexts/AuthContext';
-import { Auth } from './components/Auth';
-import { CustomerDashboard } from './components/CustomerDashboard';
 import { RestaurantDashboard } from './components/RestaurantDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
 import { DriverDashboard } from './components/DriverDashboard';
+import { Landing } from './components/Landing';
 
 function AppContent() {
   const { user, profile, loading, authError, retryProfile, signOut } = useAuth();
@@ -17,7 +16,7 @@ function AppContent() {
   }
 
   if (!user) {
-    return <Auth />;
+    return <Landing />;
   }
 
   if (!profile) {
@@ -54,7 +53,7 @@ function AppContent() {
   }
 
   if (profile.role === 'customer') {
-    return <CustomerDashboard />;
+    return <Landing />;
   }
 
   if (profile.role === 'restaurant_owner') {

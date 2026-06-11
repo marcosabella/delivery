@@ -1,18 +1,21 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { supabase, Profile, Restaurant } from '../lib/supabase';
-import { LogOut, Users, Store, Plus, Trash2, Search, Eye, EyeOff, CreditCard as Edit, Menu, X } from 'lucide-react';
+import { supabase, DishCategory, Profile, Restaurant } from '../lib/supabase';
+import { LogOut, Users, Store, Plus, Trash2, Search, Eye, EyeOff, CreditCard as Edit, Menu, Tags, X } from 'lucide-react';
 import { MessageModal } from './MessageModal';
 
 export function AdminDashboard() {
   const { profile, signOut } = useAuth();
-  const [activeTab, setActiveTab] = useState<'restaurants' | 'users'>('restaurants');
+  const [activeTab, setActiveTab] = useState<'restaurants' | 'categories' | 'users'>('restaurants');
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [users, setUsers] = useState<Profile[]>([]);
+  const [dishCategories, setDishCategories] = useState<DishCategory[]>([]);
   const [showCreateRestaurant, setShowCreateRestaurant] = useState(false);
   const [showCreateUser, setShowCreateUser] = useState(false);
   const [editingRestaurant, setEditingRestaurant] = useState<Restaurant | null>(null);
   const [editingUser, setEditingUser] = useState<Profile | null>(null);
+  const [showCategoryForm, setShowCategoryForm] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<DishCategory | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
@@ -20,6 +23,7 @@ export function AdminDashboard() {
   useEffect(() => {
     loadRestaurants();
     loadUsers();
+    loadDishCategories();
   }, []);
 
   async function loadRestaurants() {
@@ -38,6 +42,38 @@ export function AdminDashboard() {
       .order('created_at', { ascending: false });
 
     if (data) setUsers(data);
+  }
+
+  async function loadDishCategories() {
+    const { data } = await supabase
+      .from('dish_categories')
+      .select('*')
+      .order('sort_order')
+      .order('name');
+
+    if (data) setDishCategories(data);
+  }
+
+  async function handleToggleCategory(category: DishCategory) {
+    const { error } = await supabase
+      .from('dish_categories')
+      .update({ is_active: !category.is_active })
+      .eq('id', category.id);
+
+    if (error) setErrorMessage(`No se pudo actualizar la categoria: ${error.message}`);
+    else await loadDishCategories();
+  }
+
+  async function handleDeleteCategory(category: DishCategory) {
+    if (!confirm(`¿Eliminar la categoria "${category.name}"?`)) return;
+
+    const { error } = await supabase.from('dish_categories').delete().eq('id', category.id);
+    if (error) {
+      setErrorMessage('No se puede eliminar una categoria que esta siendo utilizada por platos. Puedes desactivarla.');
+      return;
+    }
+
+    await loadDishCategories();
   }
 
   async function handleToggleRestaurant(id: string, isActive: boolean) {
@@ -89,6 +125,7 @@ export function AdminDashboard() {
 
   const adminNavItems = [
     { id: 'restaurants' as const, label: 'Restaurantes', icon: Store },
+    { id: 'categories' as const, label: 'Categorias', icon: Tags },
     { id: 'users' as const, label: 'Usuarios', icon: Users },
   ];
 
@@ -339,6 +376,82 @@ export function AdminDashboard() {
           </div>
         )}
 
+        {activeTab === 'categories' && (
+          <div>
+            <div className="mb-6 flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-800">Categorias de platos</h2>
+                <p className="mt-1 text-sm text-gray-500">Catalogo unico para todos los restaurantes y los filtros de la landing.</p>
+              </div>
+              <button
+                onClick={() => setShowCategoryForm(true)}
+                className="flex items-center gap-2 rounded-lg bg-orange-500 px-4 py-2 font-medium text-white transition hover:bg-orange-600"
+              >
+                <Plus className="h-5 w-5" />
+                Nueva categoria
+              </button>
+            </div>
+
+            <div className="overflow-hidden rounded-xl bg-white shadow-sm">
+              {dishCategories.length === 0 ? (
+                <div className="p-12 text-center text-gray-500">
+                  <Tags className="mx-auto mb-4 h-14 w-14 text-gray-300" />
+                  No hay categorias configuradas.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="border-b bg-gray-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-sm font-semibold text-gray-700">Orden</th>
+                        <th className="px-6 py-3 text-left text-sm font-semibold text-gray-700">Categoria</th>
+                        <th className="px-6 py-3 text-left text-sm font-semibold text-gray-700">Estado</th>
+                        <th className="px-6 py-3 text-right text-sm font-semibold text-gray-700">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {dishCategories.map((category) => (
+                        <tr key={category.id} className="hover:bg-gray-50">
+                          <td className="px-6 py-4 text-sm text-gray-600">{category.sort_order}</td>
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-3">
+                              <div className="h-12 w-16 shrink-0 overflow-hidden rounded-lg bg-orange-50">
+                                {category.image_url ? <img src={category.image_url} alt="" className="h-full w-full object-cover" /> : <Tags className="m-auto mt-3 h-6 w-6 text-orange-300" />}
+                              </div>
+                              <div>
+                                <p className="font-medium text-gray-800">{category.name}</p>
+                                <p className="mt-0.5 max-w-md line-clamp-1 text-xs text-gray-500">{category.description || 'Sin descripcion'}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <button
+                              onClick={() => void handleToggleCategory(category)}
+                              className={`rounded-full px-3 py-1 text-xs font-semibold ${category.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}
+                            >
+                              {category.is_active ? 'Activa' : 'Inactiva'}
+                            </button>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="flex justify-end gap-2">
+                              <button onClick={() => setEditingCategory(category)} className="rounded-lg p-2 text-blue-500 hover:bg-blue-50" title="Editar">
+                                <Edit className="h-5 w-5" />
+                              </button>
+                              <button onClick={() => void handleDeleteCategory(category)} className="rounded-lg p-2 text-red-500 hover:bg-red-50" title="Eliminar">
+                                <Trash2 className="h-5 w-5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {activeTab === 'users' && (
           <div>
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
@@ -478,9 +591,144 @@ export function AdminDashboard() {
         />
       )}
 
+      {(showCategoryForm || editingCategory) && (
+        <DishCategoryModal
+          category={editingCategory}
+          onClose={() => {
+            setShowCategoryForm(false);
+            setEditingCategory(null);
+            loadDishCategories();
+          }}
+        />
+      )}
+
       {errorMessage && (
         <MessageModal type="error" message={errorMessage} onClose={() => setErrorMessage('')} />
       )}
+    </div>
+  );
+}
+
+function makeCategorySlug(name: string) {
+  return name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function DishCategoryModal({ category, onClose }: { category: DishCategory | null; onClose: () => void }) {
+  const [name, setName] = useState(category?.name || '');
+  const [description, setDescription] = useState(category?.description || '');
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState(category?.image_url || '');
+  const [sortOrder, setSortOrder] = useState(category?.sort_order.toString() || '0');
+  const [isActive, setIsActive] = useState(category?.is_active ?? true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const cleanName = name.trim();
+    const slug = makeCategorySlug(cleanName);
+    if (!slug) {
+      setError('Ingresa un nombre valido.');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    let imageUrl = category?.image_url || null;
+
+    if (imageFile) {
+      if (imageFile.size > 5 * 1024 * 1024) {
+        setError('La imagen no puede superar los 5 MB.');
+        setLoading(false);
+        return;
+      }
+
+      const extension = imageFile.name.split('.').pop()?.toLowerCase() || 'jpg';
+      const imagePath = `categories/${crypto.randomUUID()}.${extension}`;
+      const upload = await supabase.storage.from('category-images').upload(imagePath, imageFile, {
+        cacheControl: '3600',
+        contentType: imageFile.type,
+      });
+
+      if (upload.error) {
+        setError(`No se pudo cargar la imagen: ${upload.error.message}`);
+        setLoading(false);
+        return;
+      }
+
+      imageUrl = supabase.storage.from('category-images').getPublicUrl(imagePath).data.publicUrl;
+    }
+
+    const payload = {
+      name: cleanName,
+      slug,
+      description: description.trim() || null,
+      image_url: imageUrl,
+      sort_order: Math.max(0, Number.parseInt(sortOrder, 10) || 0),
+      is_active: isActive,
+    };
+    const result = category
+      ? await supabase.from('dish_categories').update(payload).eq('id', category.id)
+      : await supabase.from('dish_categories').insert(payload);
+
+    if (result.error) {
+      setError(result.error.code === '23505' ? 'Ya existe una categoria con ese nombre.' : result.error.message);
+      setLoading(false);
+      return;
+    }
+
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl bg-white p-6">
+        <h2 className="mb-4 text-2xl font-bold text-gray-800">{category ? 'Editar categoria' : 'Nueva categoria'}</h2>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <label className="block text-sm font-medium text-gray-700">
+            Nombre
+            <input required value={name} onChange={(event) => setName(event.target.value)} className="mt-2 w-full rounded-lg border border-gray-300 px-4 py-2 outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-100" />
+          </label>
+          <label className="block text-sm font-medium text-gray-700">
+            Descripcion
+            <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} className="mt-2 w-full rounded-lg border border-gray-300 px-4 py-2 outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-100" placeholder="Describe brevemente esta categoria" />
+          </label>
+          <label className="block text-sm font-medium text-gray-700">
+            Foto
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              onChange={(event) => {
+                const file = event.target.files?.[0] || null;
+                setImageFile(file);
+                if (file) setImagePreview(URL.createObjectURL(file));
+              }}
+              className="mt-2 block w-full text-sm text-gray-500 file:mr-4 file:rounded-lg file:border-0 file:bg-orange-50 file:px-4 file:py-2 file:font-semibold file:text-orange-700 hover:file:bg-orange-100"
+            />
+            <span className="mt-1 block text-xs font-normal text-gray-500">JPG, PNG, WEBP o GIF. Maximo 5 MB.</span>
+          </label>
+          {imagePreview && <img src={imagePreview} alt="Vista previa" className="h-40 w-full rounded-xl object-cover" />}
+          <label className="block text-sm font-medium text-gray-700">
+            Orden
+            <input type="number" min="0" required value={sortOrder} onChange={(event) => setSortOrder(event.target.value)} className="mt-2 w-full rounded-lg border border-gray-300 px-4 py-2 outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-100" />
+          </label>
+          <label className="flex items-center gap-3 text-sm font-medium text-gray-700">
+            <input type="checkbox" checked={isActive} onChange={(event) => setIsActive(event.target.checked)} className="h-4 w-4 rounded border-gray-300 text-orange-500" />
+            Disponible para restaurantes y filtros
+          </label>
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={onClose} className="flex-1 rounded-lg border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50">Cancelar</button>
+            <button disabled={loading} className="flex-1 rounded-lg bg-orange-500 px-4 py-2 text-white hover:bg-orange-600 disabled:opacity-50">{loading ? 'Guardando...' : 'Guardar'}</button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

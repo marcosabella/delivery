@@ -40,8 +40,21 @@ export type MenuItem = {
   description: string | null;
   price: number;
   image_url: string | null;
+  category_id: string;
   category: string | null;
   is_available: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DishCategory = {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  image_url: string | null;
+  sort_order: number;
+  is_active: boolean;
   created_at: string;
   updated_at: string;
 };

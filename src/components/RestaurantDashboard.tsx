@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { supabase, Restaurant, MenuItem, Order } from '../lib/supabase';
+import { supabase, DishCategory, Restaurant, MenuItem, Order } from '../lib/supabase';
 import { useGeolocation } from '../hooks/useGeolocation';
 import { addDefaultLocality } from '../lib/address';
-import { MessageModal } from './MessageModal';
 import {
   LogOut,
   Plus,
@@ -141,7 +140,7 @@ function openOrderTicket(restaurantName: string, ticket: PrintableOrderTicket) {
     <div class="info"><strong>Domicilio de entrega:</strong> ${escapeHtml(ticket.deliveryAddress || 'No informado')}</div>
     <table><tbody>${itemRows}</tbody></table>
     <p class="total"><strong>Total: ${escapeHtml(moneyFormatter.format(ticket.totalAmount))}</strong></p>
-    </main><script>window.addEventListener('load', () => { window.print(); window.close(); });<\/script></body></html>`);
+    </main><script>window.addEventListener('load', () => { window.print(); window.close(); });</script></body></html>`);
   ticketWindow.document.close();
   return true;
 }
@@ -151,6 +150,7 @@ export function RestaurantDashboard() {
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [selectedRestaurant, setSelectedRestaurant] = useState<Restaurant | null>(null);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [dishCategories, setDishCategories] = useState<DishCategory[]>([]);
   const [orders, setOrders] = useState<RestaurantOrder[]>([]);
   const [showMenuForm, setShowMenuForm] = useState(false);
   const [showOrderForm, setShowOrderForm] = useState(false);
@@ -175,6 +175,7 @@ export function RestaurantDashboard() {
   useEffect(() => {
     if (profile) {
       loadRestaurants();
+      loadDishCategories();
     }
   }, [profile]);
 
@@ -225,6 +226,17 @@ export function RestaurantDashboard() {
       .order('category', { ascending: true });
 
     if (data) setMenuItems(data);
+  }
+
+  async function loadDishCategories() {
+    const { data } = await supabase
+      .from('dish_categories')
+      .select('*')
+      .eq('is_active', true)
+      .order('sort_order')
+      .order('name');
+
+    if (data) setDishCategories(data);
   }
 
   async function loadOrders() {
@@ -1452,6 +1464,7 @@ export function RestaurantDashboard() {
       {showMenuForm && selectedRestaurant && (
         <MenuItemForm
           restaurantId={selectedRestaurant.id}
+          categories={dishCategories}
           onClose={() => { setShowMenuForm(false); loadMenuItems(); }}
         />
       )}
@@ -1472,6 +1485,7 @@ export function RestaurantDashboard() {
       {editingItem && (
         <MenuItemEditForm
           item={editingItem}
+          categories={dishCategories}
           onClose={() => { setEditingItem(null); loadMenuItems(); }}
         />
       )}
@@ -1851,12 +1865,12 @@ function RestaurantOrderForm({
   );
 }
 
-function MenuItemForm({ restaurantId, onClose }: { restaurantId: string; onClose: () => void }) {
+function MenuItemForm({ restaurantId, categories, onClose }: { restaurantId: string; categories: DishCategory[]; onClose: () => void }) {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
     price: '',
-    category: '',
+    categoryId: categories[0]?.id || '',
   });
   const [image, setImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string>('');
@@ -1911,7 +1925,7 @@ function MenuItemForm({ restaurantId, onClose }: { restaurantId: string; onClose
         name: formData.name,
         description: formData.description,
         price: parseFloat(formData.price),
-        category: formData.category,
+        category_id: formData.categoryId,
         image_url: imageUrl,
       });
       onClose();
@@ -1973,13 +1987,18 @@ function MenuItemForm({ restaurantId, onClose }: { restaurantId: string; onClose
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Categoría</label>
-            <input
-              type="text"
-              value={formData.category}
-              onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+            <select
+              required
+              value={formData.categoryId}
+              onChange={(e) => setFormData({ ...formData, categoryId: e.target.value })}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-              placeholder="Ej: Entrada, Plato Principal, Postre"
-            />
+            >
+              <option value="" disabled>Selecciona una categoria</option>
+              {categories.map((category) => (
+                <option key={category.id} value={category.id}>{category.name}</option>
+              ))}
+            </select>
+            {categories.length === 0 && <p className="mt-2 text-sm text-red-600">No hay categorias activas. Solicita al administrador que cree una.</p>}
           </div>
           <div className="flex gap-3">
             <button
@@ -1991,7 +2010,7 @@ function MenuItemForm({ restaurantId, onClose }: { restaurantId: string; onClose
             </button>
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || categories.length === 0}
               className="flex-1 px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white rounded-lg transition"
             >
               {loading ? 'Cargando...' : 'Agregar'}
@@ -2003,12 +2022,12 @@ function MenuItemForm({ restaurantId, onClose }: { restaurantId: string; onClose
   );
 }
 
-function MenuItemEditForm({ item, onClose }: { item: MenuItem; onClose: () => void }) {
+function MenuItemEditForm({ item, categories, onClose }: { item: MenuItem; categories: DishCategory[]; onClose: () => void }) {
   const [formData, setFormData] = useState({
     name: item.name,
     description: item.description || '',
     price: item.price.toString(),
-    category: item.category || '',
+    categoryId: item.category_id || '',
   });
   const [image, setImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string>(item.image_url || '');
@@ -2064,7 +2083,7 @@ function MenuItemEditForm({ item, onClose }: { item: MenuItem; onClose: () => vo
           name: formData.name,
           description: formData.description,
           price: parseFloat(formData.price),
-          category: formData.category,
+          category_id: formData.categoryId,
           image_url: imageUrl,
         })
         .eq('id', item.id);
@@ -2127,13 +2146,20 @@ function MenuItemEditForm({ item, onClose }: { item: MenuItem; onClose: () => vo
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Categoría</label>
-            <input
-              type="text"
-              value={formData.category}
-              onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+            <select
+              required
+              value={formData.categoryId}
+              onChange={(e) => setFormData({ ...formData, categoryId: e.target.value })}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-              placeholder="Ej: Entrada, Plato Principal, Postre"
-            />
+            >
+              {!categories.some((category) => category.id === item.category_id) && item.category && (
+                <option value={item.category_id}>{item.category} (inactiva)</option>
+              )}
+              <option value="" disabled>Selecciona una categoria</option>
+              {categories.map((category) => (
+                <option key={category.id} value={category.id}>{category.name}</option>
+              ))}
+            </select>
           </div>
           <div className="flex gap-3">
             <button
@@ -2145,7 +2171,7 @@ function MenuItemEditForm({ item, onClose }: { item: MenuItem; onClose: () => vo
             </button>
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || !formData.categoryId}
               className="flex-1 px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white rounded-lg transition"
             >
               {loading ? 'Cargando...' : 'Guardar'}

@@ -10,6 +10,7 @@ type AuthContextType = {
   retryProfile: () => Promise<void>;
   signUp: (email: string, password: string, fullName: string, phone?: string) => Promise<{ requiresEmailConfirmation: boolean }>;
   signIn: (email: string, password: string) => Promise<void>;
+  signInWithOAuth: (provider: 'google' | 'facebook') => Promise<void>;
   signOut: () => Promise<void>;
 };
 
@@ -153,9 +154,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           ? metadataRole
           : 'customer';
 
+    const metadataFullName = authUser.user_metadata?.full_name || authUser.user_metadata?.name;
     const fullName =
-      typeof authUser.user_metadata?.full_name === 'string' && authUser.user_metadata.full_name.trim()
-        ? authUser.user_metadata.full_name.trim()
+      typeof metadataFullName === 'string' && metadataFullName.trim()
+        ? metadataFullName.trim()
         : authUser.email || 'Usuario';
 
     const { data, error } = await supabase
@@ -208,9 +210,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (error) throw error;
   }
 
-  async function signOut() {
-    const { error } = await supabase.auth.signOut();
+  async function signInWithOAuth(provider: 'google' | 'facebook') {
+    setAuthError(null);
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider,
+      options: {
+        redirectTo: window.location.origin,
+      },
+    });
+
     if (error) throw error;
+  }
+
+  async function signOut() {
+    setUser(null);
+    setProfile(null);
+    setAuthError(null);
+    setLoading(false);
+
+    const { error } = await supabase.auth.signOut({ scope: 'local' });
+    if (error) {
+      console.error('Error signing out:', error);
+      throw error;
+    }
   }
 
   async function retryProfile() {
@@ -218,7 +241,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, authError, retryProfile, signUp, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, profile, loading, authError, retryProfile, signUp, signIn, signInWithOAuth, signOut }}>
       {children}
     </AuthContext.Provider>
   );

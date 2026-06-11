@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { UtensilsCrossed } from 'lucide-react';
 
-export function Auth() {
+export function Auth({ embedded = false }: { embedded?: boolean }) {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -10,7 +10,8 @@ export function Auth() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
-  const { signIn, signUp } = useAuth();
+  const [oauthProvider, setOAuthProvider] = useState<'google' | 'facebook' | null>(null);
+  const { signIn, signUp, signInWithOAuth } = useAuth();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -37,8 +38,23 @@ export function Auth() {
     }
   }
 
+  async function handleOAuth(provider: 'google' | 'facebook') {
+    setError('');
+    setMessage('');
+    setOAuthProvider(provider);
+
+    try {
+      await signInWithOAuth(provider);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudo iniciar sesion con el proveedor');
+      setOAuthProvider(null);
+    }
+  }
+
+  const isSubmitting = loading || oauthProvider !== null;
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-orange-50 via-white to-orange-50 flex items-center justify-center p-4">
+    <div className={`${embedded ? '' : 'min-h-screen bg-gradient-to-br from-orange-50 via-white to-orange-50 flex items-center justify-center p-4'}`}>
       <div className="w-full max-w-md">
         <div className="bg-white rounded-2xl shadow-xl p-8">
           <div className="flex justify-center mb-6">
@@ -65,6 +81,41 @@ export function Auth() {
               {message}
             </div>
           )}
+
+          <div className="space-y-3">
+            <button
+              type="button"
+              onClick={() => void handleOAuth('google')}
+              disabled={isSubmitting}
+              className="flex w-full items-center justify-center gap-3 rounded-lg border border-gray-300 bg-white px-4 py-3 font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5">
+                <path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.4a4.6 4.6 0 0 1-2 3v2.6h3.3c1.9-1.8 2.9-4.4 2.9-7.5Z" />
+                <path fill="#34A853" d="M12 22c2.7 0 5-.9 6.7-2.3l-3.3-2.6c-.9.6-2.1 1-3.4 1a5.9 5.9 0 0 1-5.5-4.1H3.1v2.6A10 10 0 0 0 12 22Z" />
+                <path fill="#FBBC05" d="M6.5 14a6 6 0 0 1 0-3.9V7.4H3.1a10 10 0 0 0 0 9.2L6.5 14Z" />
+                <path fill="#EA4335" d="M12 5.9c1.5 0 2.9.5 3.9 1.5l2.9-2.9A9.8 9.8 0 0 0 3.1 7.4l3.4 2.7A5.9 5.9 0 0 1 12 5.9Z" />
+              </svg>
+              {oauthProvider === 'google' ? 'Redirigiendo...' : 'Continuar con Google'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void handleOAuth('facebook')}
+              disabled={isSubmitting}
+              className="flex w-full items-center justify-center gap-3 rounded-lg bg-[#1877F2] px-4 py-3 font-semibold text-white transition hover:bg-[#166FE5] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 fill-current">
+                <path d="M22 12a10 10 0 1 0-11.6 9.9v-7H7.9V12h2.5V9.8c0-2.5 1.5-3.9 3.8-3.9 1.1 0 2.2.2 2.2.2v2.5h-1.2c-1.2 0-1.6.7-1.6 1.5V12h2.7l-.4 2.9h-2.3v7A10 10 0 0 0 22 12Z" />
+              </svg>
+              {oauthProvider === 'facebook' ? 'Redirigiendo...' : 'Continuar con Facebook'}
+            </button>
+          </div>
+
+          <div className="my-6 flex items-center gap-3" aria-hidden="true">
+            <div className="h-px flex-1 bg-gray-200" />
+            <span className="text-sm text-gray-500">o con email</span>
+            <div className="h-px flex-1 bg-gray-200" />
+          </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {!isLogin && (
@@ -119,7 +170,7 @@ export function Auth() {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={isSubmitting}
               className="w-full bg-orange-500 hover:bg-orange-600 text-white font-semibold py-3 px-4 rounded-lg transition duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading ? 'Cargando...' : isLogin ? 'Iniciar Sesión' : 'Registrarse'}
