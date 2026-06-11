@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase, Restaurant, MenuItem, Order } from '../lib/supabase';
 import { useGeolocation } from '../hooks/useGeolocation';
 import { addDefaultLocality } from '../lib/address';
+import { MessageModal } from './MessageModal';
 import {
   LogOut,
   Plus,
@@ -26,6 +27,7 @@ import {
   Menu,
   X,
   Search,
+  Printer,
   UserPlus,
   Users,
 } from 'lucide-react';
@@ -49,6 +51,7 @@ type RestaurantOrder = Order & {
 };
 
 type OrderGroupId = 'pending' | 'kitchen' | 'delivery' | 'closed';
+type HistoryPeriod = 'today' | '7days' | '30days' | 'all';
 
 type RestaurantDriver = {
   driver_id: string;
@@ -79,6 +82,70 @@ const moneyFormatter = new Intl.NumberFormat('es-AR', {
   maximumFractionDigits: 0,
 });
 
+const historyPeriodOptions: Array<{ value: HistoryPeriod; label: string }> = [
+  { value: 'today', label: 'Hoy' },
+  { value: '7days', label: 'Últimos 7 días' },
+  { value: '30days', label: 'Últimos 30 días' },
+  { value: 'all', label: 'Todo el historial' },
+];
+
+function getHistoryPeriodStart(period: HistoryPeriod) {
+  if (period === 'all') return null;
+
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  if (period === '7days') start.setDate(start.getDate() - 6);
+  if (period === '30days') start.setDate(start.getDate() - 29);
+
+  return start;
+}
+
+function isWithinHistoryPeriod(dateValue: string, period: HistoryPeriod) {
+  const start = getHistoryPeriodStart(period);
+  if (!start) return true;
+
+  return new Date(dateValue) >= start;
+}
+
+type PrintableOrderTicket = {
+  orderId: string;
+  customerName: string;
+  deliveryAddress: string;
+  totalAmount: number;
+  items: Array<{ name: string; quantity: number; subtotal: number }>;
+};
+
+function openOrderTicket(restaurantName: string, ticket: PrintableOrderTicket) {
+  const escapeHtml = (value: string) => value.replace(
+    /[&<>'"]/g,
+    (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] || character,
+  );
+  const ticketWindow = window.open('', '_blank', 'width=420,height=640');
+  if (!ticketWindow) return false;
+
+  const itemRows = ticket.items.map((item) =>
+    `<tr><td><strong>${item.quantity} x</strong> ${escapeHtml(item.name)}</td><td>${escapeHtml(moneyFormatter.format(item.subtotal))}</td></tr>`,
+  ).join('');
+
+  ticketWindow.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8">
+    <title>Pedido #${escapeHtml(ticket.orderId.slice(0, 8))}</title><style>
+    @page { margin: 8mm; } body { font-family: Arial, sans-serif; color: #111; margin: 0; }
+    .ticket { max-width: 80mm; margin: 0 auto; } h1 { margin: 0 0 12px; text-align: center; font-size: 22px; }
+    .order { border-block: 2px dashed #111; padding: 10px 0; font-size: 18px; }
+    .info { margin: 10px 0; font-size: 15px; line-height: 1.4; } table { width: 100%; border-collapse: collapse; }
+    td { border-top: 1px solid #bbb; padding: 10px 0; font-size: 15px; vertical-align: top; }
+    td:last-child { text-align: right; white-space: nowrap; } .total { border-top: 2px solid #111; padding-top: 10px; text-align: right; font-size: 18px; }
+    </style></head><body><main class="ticket"><h1>${escapeHtml(restaurantName)}</h1>
+    <div class="order"><strong>Pedido #${escapeHtml(ticket.orderId.slice(0, 8))}</strong></div>
+    <div class="info"><strong>Cliente:</strong> ${escapeHtml(ticket.customerName)}</div>
+    <div class="info"><strong>Domicilio de entrega:</strong> ${escapeHtml(ticket.deliveryAddress || 'No informado')}</div>
+    <table><tbody>${itemRows}</tbody></table>
+    <p class="total"><strong>Total: ${escapeHtml(moneyFormatter.format(ticket.totalAmount))}</strong></p>
+    </main><script>window.addEventListener('load', () => { window.print(); window.close(); });<\/script></body></html>`);
+  ticketWindow.document.close();
+  return true;
+}
+
 export function RestaurantDashboard() {
   const { profile, signOut } = useAuth();
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
@@ -89,6 +156,7 @@ export function RestaurantDashboard() {
   const [showOrderForm, setShowOrderForm] = useState(false);
   const [activeTab, setActiveTab] = useState<'menu' | 'orders' | 'route' | 'drivers'>('orders');
   const [activeOrderGroupId, setActiveOrderGroupId] = useState<OrderGroupId>('pending');
+  const [orderHistoryPeriod, setOrderHistoryPeriod] = useState<HistoryPeriod>('today');
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [showOrderDetail, setShowOrderDetail] = useState(false);
@@ -96,8 +164,11 @@ export function RestaurantDashboard() {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [drivers, setDrivers] = useState<RestaurantDriver[]>([]);
   const [routes, setRoutes] = useState<RouteHistory[]>([]);
+  const [routeHistoryPeriod, setRouteHistoryPeriod] = useState<HistoryPeriod>('today');
+  const [activeRouteOrderIds, setActiveRouteOrderIds] = useState<Set<string>>(new Set());
   const [selectedDriverId, setSelectedDriverId] = useState('');
   const [showDriverForm, setShowDriverForm] = useState(false);
+  const [editingDriver, setEditingDriver] = useState<RestaurantDriver | null>(null);
   const [routeError, setRouteError] = useState('');
   const [dispatchingRoute, setDispatchingRoute] = useState(false);
 
@@ -112,9 +183,12 @@ export function RestaurantDashboard() {
       loadMenuItems();
       loadOrders();
       loadDrivers();
-      loadRoutes();
     }
   }, [selectedRestaurant]);
+
+  useEffect(() => {
+    if (selectedRestaurant) loadRoutes();
+  }, [selectedRestaurant, routeHistoryPeriod]);
 
   useEffect(() => {
     if (!selectedRestaurant) return;
@@ -124,7 +198,7 @@ export function RestaurantDashboard() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_route_orders' }, () => { void loadRoutes(); void loadOrders(); })
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [selectedRestaurant]);
+  }, [selectedRestaurant, routeHistoryPeriod]);
 
   async function loadRestaurants() {
     const { data } = await supabase
@@ -202,7 +276,7 @@ export function RestaurantDashboard() {
 
   async function loadRoutes() {
     if (!selectedRestaurant) return;
-    const { data } = await supabase
+    let routesQuery = supabase
       .from('delivery_routes')
       .select(`
         id, status, assigned_at, started_at, completed_at,
@@ -213,9 +287,20 @@ export function RestaurantDashboard() {
         )
       `)
       .eq('restaurant_id', selectedRestaurant.id)
-      .order('created_at', { ascending: false })
-      .limit(20);
+      .order('created_at', { ascending: false });
+    const historyStart = getHistoryPeriodStart(routeHistoryPeriod);
+    if (historyStart) routesQuery = routesQuery.gte('assigned_at', historyStart.toISOString());
+
+    const [{ data }, { data: activeRouteOrders }] = await Promise.all([
+      routesQuery,
+      supabase
+        .from('delivery_route_orders')
+        .select('order_id, route:delivery_routes!inner(restaurant_id, status)')
+        .eq('route.restaurant_id', selectedRestaurant.id)
+        .in('route.status', ['assigned', 'in_progress']),
+    ]);
     if (data) setRoutes(data as unknown as RouteHistory[]);
+    setActiveRouteOrderIds(new Set((activeRouteOrders || []).map((item) => item.order_id)));
   }
 
   async function handleUpdateOrderStatus(orderId: string, status: Order['status']) {
@@ -296,15 +381,24 @@ export function RestaurantDashboard() {
       if (!order) return false;
       return canAddToRoute(order);
     });
+  const availableRouteOrders = orders.filter(
+    (order) => canAddToRoute(order) && !routeOrderIds.includes(order.id)
+  );
   const routeOrders = [
-    ...orders.filter((order) => order.status === 'delivering' && !isPickupOrder(order)),
+    ...orders.filter((order) => order.status === 'delivering' && activeRouteOrderIds.has(order.id)),
     ...pendingRouteOrders,
   ];
+  const closedOrders = orders.filter(
+    (order) =>
+      (order.status === 'delivered' || order.status === 'cancelled')
+      && isWithinHistoryPeriod(order.updated_at || order.created_at, orderHistoryPeriod)
+  );
+  const filteredRoutes = routes.filter((route) => isWithinHistoryPeriod(route.assigned_at, routeHistoryPeriod));
   const orderGroups: Array<{ id: OrderGroupId; title: string; icon: typeof Clock; orders: RestaurantOrder[] }> = [
     { id: 'pending', title: 'Nuevos', icon: Clock, orders: orders.filter((order) => order.status === 'pending') },
     { id: 'kitchen', title: 'Cocina', icon: ChefHat, orders: orders.filter((order) => order.status === 'confirmed' || order.status === 'preparing') },
     { id: 'delivery', title: 'Reparto', icon: Bike, orders: orders.filter((order) => order.status === 'delivering') },
-    { id: 'closed', title: 'Cerrados', icon: CheckCircle2, orders: orders.filter((order) => order.status === 'delivered' || order.status === 'cancelled') },
+    { id: 'closed', title: 'Cerrados', icon: CheckCircle2, orders: closedOrders },
   ];
   const activeOrderGroup = orderGroups.find((group) => group.id === activeOrderGroupId) || orderGroups[0];
   const ActiveOrderGroupIcon = activeOrderGroup.icon;
@@ -318,7 +412,9 @@ export function RestaurantDashboard() {
   }
 
   function canAddToRoute(order: RestaurantOrder) {
-    return !isPickupOrder(order) && (order.status === 'confirmed' || order.status === 'preparing');
+    return !isPickupOrder(order)
+      && (order.status === 'confirmed' || order.status === 'preparing' || order.status === 'delivering')
+      && !activeRouteOrderIds.has(order.id);
   }
 
   function getFulfillmentLabel(order: RestaurantOrder) {
@@ -430,6 +526,21 @@ export function RestaurantDashboard() {
       : 'Cliente sin registrar');
   }
 
+  function handlePrintOrderTicket(order: RestaurantOrder) {
+    const printed = openOrderTicket(selectedRestaurant?.name || 'Restaurante', {
+      orderId: order.id,
+      customerName: getCustomerName(order),
+      deliveryAddress: getOrderAddressLabel(order),
+      totalAmount: order.total_amount,
+      items: (order.order_items || []).map((item) => ({
+        name: item.menu_item?.name || 'Producto',
+        quantity: item.quantity,
+        subtotal: item.subtotal,
+      })),
+    });
+    if (!printed) window.alert('El navegador bloqueó la ventana de impresión. Habilitá las ventanas emergentes e intentá nuevamente.');
+  }
+
   function renderOrderDetailScreen(order: RestaurantOrder) {
     return (
       <div className="space-y-6">
@@ -525,6 +636,14 @@ export function RestaurantDashboard() {
             </div>
 
             <div className="flex flex-wrap gap-2 pt-2 border-t">
+              <button
+                type="button"
+                onClick={() => handlePrintOrderTicket(order)}
+                className="flex items-center gap-2 px-3 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg text-sm font-medium transition"
+              >
+                <Printer className="w-4 h-4" />
+                Imprimir ticket
+              </button>
               {getNextStatus(order) && (
                 <button
                   type="button"
@@ -884,7 +1003,21 @@ export function RestaurantDashboard() {
                                 <ActiveOrderGroupIcon className="w-4 h-4 text-gray-500" />
                                 <h3 className="font-semibold text-gray-800">{activeOrderGroup.title}</h3>
                               </div>
-                              <span className="text-xs font-semibold text-gray-500">{activeOrderGroup.orders.length}</span>
+                              <div className="flex items-center gap-3">
+                                {activeOrderGroupId === 'closed' && (
+                                  <select
+                                    value={orderHistoryPeriod}
+                                    onChange={(event) => setOrderHistoryPeriod(event.target.value as HistoryPeriod)}
+                                    aria-label="Filtrar historial de pedidos"
+                                    className="rounded-lg border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700"
+                                  >
+                                    {historyPeriodOptions.map((option) => (
+                                      <option key={option.value} value={option.value}>{option.label}</option>
+                                    ))}
+                                  </select>
+                                )}
+                                <span className="text-xs font-semibold text-gray-500">{activeOrderGroup.orders.length}</span>
+                              </div>
                             </div>
                             {activeOrderGroup.orders.length === 0 ? (
                               <p className="text-sm text-gray-500 py-6 text-center">Sin pedidos</p>
@@ -949,6 +1082,14 @@ export function RestaurantDashboard() {
                                           </td>
                                           <td className="px-2 py-2 align-middle">
                                             <div className="flex flex-nowrap items-center justify-end gap-1 whitespace-nowrap">
+                                              <button
+                                                type="button"
+                                                onClick={() => handlePrintOrderTicket(order)}
+                                                className="inline-flex items-center justify-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-[11px] font-medium text-gray-700 transition hover:bg-gray-50"
+                                              >
+                                                <Printer className="h-3.5 w-3.5" />
+                                                Ticket
+                                              </button>
                                               <button
                                                 type="button"
                                                 onClick={() => handleOpenOrderDetail(order.id)}
@@ -1086,16 +1227,16 @@ export function RestaurantDashboard() {
 
                 {activeTab === 'route' && !showOrderDetail && (
                   <section className="border border-gray-200 rounded-lg p-4">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-4">
                       <div>
                         <h2 className="text-xl font-bold text-gray-800">Hoja de ruta</h2>
-                        <p className="text-sm text-gray-600">Muestra los pedidos seleccionados y los que siguen en camino.</p>
+                        <p className="text-sm text-gray-600">Muestra los pedidos seleccionados y los que siguen en camino. También podés asignar pedidos en reparto que hayan quedado sin hoja de ruta.</p>
                       </div>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto] lg:w-auto">
                         <select
                           value={selectedDriverId}
                           onChange={(event) => setSelectedDriverId(event.target.value)}
-                          className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700"
+                          className="min-w-0 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700"
                         >
                           <option value="">Seleccionar repartidor</option>
                           {drivers.filter((item) => item.is_active).map((item) => (
@@ -1103,7 +1244,7 @@ export function RestaurantDashboard() {
                           ))}
                         </select>
                         {routeOrders.length > 0 ? (
-                          <a href={routeWhatsAppUrl} target="_blank" rel="noreferrer" className="flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition">
+                          <a href={routeWhatsAppUrl} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-2 whitespace-nowrap px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition">
                             <MessageCircle className="w-4 h-4" />
                             Enviar por WhatsApp
                           </a>
@@ -1111,7 +1252,7 @@ export function RestaurantDashboard() {
                           <button
                             type="button"
                             disabled
-                            className="flex items-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg text-sm font-medium opacity-50"
+                            className="flex items-center justify-center gap-2 whitespace-nowrap px-3 py-2 bg-green-600 text-white rounded-lg text-sm font-medium opacity-50"
                           >
                             <MessageCircle className="w-4 h-4" />
                             Enviar por WhatsApp
@@ -1121,7 +1262,7 @@ export function RestaurantDashboard() {
                           type="button"
                           onClick={handleDispatchRoute}
                           disabled={pendingRouteOrders.length === 0 || !selectedDriverId || dispatchingRoute}
-                          className="flex items-center gap-2 px-3 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 disabled:hover:bg-cyan-600 text-white rounded-lg text-sm font-medium transition"
+                          className="flex items-center justify-center gap-2 whitespace-nowrap px-3 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 disabled:hover:bg-cyan-600 text-white rounded-lg text-sm font-medium transition"
                         >
                           <Bike className="w-4 h-4" />
                           {dispatchingRoute ? 'Asignando...' : 'Asignar hoja de ruta'}
@@ -1133,6 +1274,30 @@ export function RestaurantDashboard() {
                     {drivers.filter((item) => item.is_active).length === 0 && (
                       <div className="mb-4 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-800">
                         Primero cargá un repartidor desde la sección Repartidores.
+                      </div>
+                    )}
+
+                    {availableRouteOrders.length > 0 && (
+                      <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                        <h3 className="font-semibold text-gray-800">Pedidos disponibles</h3>
+                        <p className="mb-3 text-sm text-gray-500">Agregá los pedidos que querés asignar al repartidor seleccionado.</p>
+                        <div className="space-y-2">
+                          {availableRouteOrders.map((order) => (
+                            <div key={order.id} className="flex items-center gap-3 rounded-lg border border-gray-200 bg-white p-3">
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-semibold text-gray-800">#{order.id.slice(0, 8)} - {getCustomerName(order)}</p>
+                                <p className="truncate text-sm text-gray-600">{getOrderAddressLabel(order)}</p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => toggleRouteOrder(order.id)}
+                                className="flex-shrink-0 rounded-lg bg-cyan-100 px-3 py-2 text-sm font-medium text-cyan-800 transition hover:bg-cyan-200"
+                              >
+                                Agregar
+                              </button>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
 
@@ -1161,7 +1326,7 @@ export function RestaurantDashboard() {
 
                     {routeOrders.length === 0 ? (
                       <div className="border border-dashed border-gray-300 rounded-lg px-4 py-6 text-center text-sm text-gray-500">
-                        Selecciona pedidos confirmados o en preparacion desde Pedidos para armar el reparto. Permaneceran aqui mientras esten en camino.
+                        Selecciona pedidos confirmados, en preparacion o en reparto sin hoja asignada desde Pedidos para armar el recorrido.
                       </div>
                     ) : (
                       <ol className="space-y-2">
@@ -1200,11 +1365,25 @@ export function RestaurantDashboard() {
                     )}
 
                     <div className="mt-8 border-t border-gray-200 pt-5">
-                      <h3 className="font-semibold text-gray-800">Trazabilidad de rutas</h3>
-                      <p className="mb-4 text-sm text-gray-500">Últimas hojas asignadas y estado de cada parada.</p>
-                      {routes.length === 0 ? <p className="text-sm text-gray-500">Todavía no hay rutas registradas.</p> : (
+                      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+                        <div>
+                          <h3 className="font-semibold text-gray-800">Trazabilidad de rutas</h3>
+                          <p className="text-sm text-gray-500">Hojas asignadas y estado de cada parada.</p>
+                        </div>
+                        <select
+                          value={routeHistoryPeriod}
+                          onChange={(event) => setRouteHistoryPeriod(event.target.value as HistoryPeriod)}
+                          aria-label="Filtrar historial de hojas de ruta"
+                          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700"
+                        >
+                          {historyPeriodOptions.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      {filteredRoutes.length === 0 ? <p className="text-sm text-gray-500">No hay rutas para el período seleccionado.</p> : (
                         <div className="space-y-3">
-                          {routes.map((route) => {
+                          {filteredRoutes.map((route) => {
                             const stops = [...route.delivery_route_orders].sort((a, b) => a.stop_sequence - b.stop_sequence);
                             return (
                               <div key={route.id} className="rounded-lg border border-gray-200 p-3">
@@ -1241,7 +1420,24 @@ export function RestaurantDashboard() {
                     </div>
                     {drivers.length === 0 ? <div className="rounded-lg border border-dashed border-gray-300 py-10 text-center text-sm text-gray-500">No hay repartidores cargados.</div> : (
                       <div className="grid gap-3 sm:grid-cols-2">
-                        {drivers.map((item) => <div key={item.driver_id} className="rounded-lg border border-gray-200 p-4"><div className="flex items-center justify-between"><div><p className="font-semibold text-gray-800">{item.driver.full_name}</p><p className="text-sm text-gray-500">{item.driver.email}</p>{item.driver.phone && <p className="text-sm text-gray-500">{item.driver.phone}</p>}</div><span className={`rounded-full px-2 py-1 text-xs font-medium ${item.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{item.is_active ? 'Activo' : 'Inactivo'}</span></div></div>)}
+                        {drivers.map((item) => (
+                          <div key={item.driver_id} className="rounded-lg border border-gray-200 p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="font-semibold text-gray-800">{item.driver.full_name}</p>
+                                <p className="truncate text-sm text-gray-500">{item.driver.email}</p>
+                                {item.driver.phone && <p className="text-sm text-gray-500">{item.driver.phone}</p>}
+                              </div>
+                              <div className="flex shrink-0 flex-col items-end gap-2">
+                                <span className={`rounded-full px-2 py-1 text-xs font-medium ${item.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{item.is_active ? 'Activo' : 'Inactivo'}</span>
+                                <button type="button" onClick={() => setEditingDriver(item)} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                                  <Edit2 className="h-4 w-4" />
+                                  Editar
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </section>
@@ -1282,12 +1478,22 @@ export function RestaurantDashboard() {
       {showDriverForm && selectedRestaurant && (
         <DriverForm restaurantId={selectedRestaurant.id} onClose={() => { setShowDriverForm(false); loadDrivers(); }} />
       )}
+      {editingDriver && selectedRestaurant && (
+        <DriverForm driver={editingDriver} restaurantId={selectedRestaurant.id} onClose={() => { setEditingDriver(null); loadDrivers(); }} />
+      )}
     </div>
   );
 }
 
-function DriverForm({ restaurantId, onClose }: { restaurantId: string; onClose: () => void }) {
-  const [form, setForm] = useState({ fullName: '', email: '', phone: '', password: '' });
+function DriverForm({ restaurantId, driver, onClose }: { restaurantId: string; driver?: RestaurantDriver; onClose: () => void }) {
+  const isEditing = Boolean(driver);
+  const [form, setForm] = useState({
+    fullName: driver?.driver.full_name || '',
+    email: driver?.driver.email || '',
+    phone: driver?.driver.phone || '',
+    password: '',
+    isActive: driver?.is_active ?? true,
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -1295,19 +1501,21 @@ function DriverForm({ restaurantId, onClose }: { restaurantId: string; onClose: 
     event.preventDefault();
     setLoading(true);
     setError('');
-    const { error: createError } = await supabase.functions.invoke('admin-users', {
+    const { data, error: saveError } = await supabase.functions.invoke('admin-users', {
       body: {
-        action: 'create',
+        action: isEditing ? 'update-driver' : 'create',
         role: 'driver',
         restaurantId,
+        userId: driver?.driver_id,
         fullName: form.fullName.trim(),
         email: form.email.trim(),
         phone: form.phone.trim() || null,
         password: form.password,
+        isActive: form.isActive,
       },
     });
-    if (createError) {
-      setError(createError.message);
+    if (saveError || data?.error) {
+      setError(data?.error || saveError?.message || 'No se pudo guardar el repartidor');
       setLoading(false);
       return;
     }
@@ -1317,15 +1525,21 @@ function DriverForm({ restaurantId, onClose }: { restaurantId: string; onClose: 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-md rounded-xl bg-white p-6">
-        <h2 className="text-xl font-bold text-gray-800">Nuevo repartidor</h2>
-        <p className="mb-5 mt-1 text-sm text-gray-500">Se creará un acceso asociado únicamente a este restaurante.</p>
+        <h2 className="text-xl font-bold text-gray-800">{isEditing ? 'Editar repartidor' : 'Nuevo repartidor'}</h2>
+        <p className="mb-5 mt-1 text-sm text-gray-500">{isEditing ? 'Actualizá los datos de acceso y disponibilidad.' : 'Se creará un acceso asociado únicamente a este restaurante.'}</p>
         {error && <div className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</div>}
         <form onSubmit={handleSubmit} className="space-y-4">
           <input required value={form.fullName} onChange={(event) => setForm({ ...form, fullName: event.target.value })} placeholder="Nombre completo" className="w-full rounded-lg border border-gray-300 px-3 py-2" />
           <input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="Email" className="w-full rounded-lg border border-gray-300 px-3 py-2" />
           <input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} placeholder="Teléfono" className="w-full rounded-lg border border-gray-300 px-3 py-2" />
-          <input required minLength={6} type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="Contraseña (mínimo 6 caracteres)" className="w-full rounded-lg border border-gray-300 px-3 py-2" />
-          <div className="flex gap-3 pt-2"><button type="button" onClick={onClose} className="flex-1 rounded-lg border border-gray-300 px-4 py-2 text-gray-700">Cancelar</button><button disabled={loading} className="flex-1 rounded-lg bg-orange-500 px-4 py-2 font-semibold text-white disabled:opacity-50">{loading ? 'Creando...' : 'Crear'}</button></div>
+          <input required={!isEditing} minLength={form.password ? 6 : undefined} type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder={isEditing ? 'Nueva contraseña (opcional)' : 'Contraseña (mínimo 6 caracteres)'} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+          {isEditing && (
+            <label className="flex items-center gap-3 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700">
+              <input type="checkbox" checked={form.isActive} onChange={(event) => setForm({ ...form, isActive: event.target.checked })} className="h-4 w-4 rounded border-gray-300 text-orange-500 focus:ring-orange-500" />
+              Repartidor activo para este restaurante
+            </label>
+          )}
+          <div className="flex gap-3 pt-2"><button type="button" onClick={onClose} className="flex-1 rounded-lg border border-gray-300 px-4 py-2 text-gray-700">Cancelar</button><button disabled={loading} className="flex-1 rounded-lg bg-orange-500 px-4 py-2 font-semibold text-white disabled:opacity-50">{loading ? 'Guardando...' : isEditing ? 'Guardar' : 'Crear'}</button></div>
         </form>
       </div>
     </div>
@@ -1366,6 +1580,14 @@ function RestaurantOrderForm({
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showSuccessMessage, setShowSuccessMessage] = useState(false);
+  const [createdOrderTicket, setCreatedOrderTicket] = useState<{
+    orderId: string;
+    customerName: string;
+    deliveryAddress: string;
+    totalAmount: number;
+    items: Array<{ name: string; quantity: number; subtotal: number }>;
+  } | null>(null);
 
   const total = availableItems.reduce(
     (sum, item) => sum + item.price * (quantities[item.id] || 0),
@@ -1459,8 +1681,29 @@ function RestaurantOrderForm({
       return;
     }
 
-    alert('Pedido creado correctamente.');
-    onCreated();
+    setCreatedOrderTicket({
+      orderId: data.orderId,
+      customerName: customer.fullName.trim(),
+      deliveryAddress: deliveryMethod === 'delivery' ? addressToSave : restaurant.address || 'Retira en el restaurante',
+      totalAmount: total,
+      items: items.map((item) => ({
+        name: availableItems.find((menuItem) => menuItem.id === item.menuItemId)?.name || 'Producto',
+        quantity: item.quantity,
+        subtotal: (availableItems.find((menuItem) => menuItem.id === item.menuItemId)?.price || 0) * item.quantity,
+      })),
+    });
+    setShowSuccessMessage(true);
+  }
+
+  function printOrderTicket() {
+    if (!createdOrderTicket) return;
+
+    if (!openOrderTicket(restaurant.name, createdOrderTicket)) {
+      setError('El navegador bloqueó la ventana de impresión. Habilitá las ventanas emergentes e intentá nuevamente.');
+      setShowSuccessMessage(false);
+      return;
+    }
+
   }
 
   return (
@@ -1479,14 +1722,14 @@ function RestaurantOrderForm({
         <form onSubmit={handleSubmit} className="space-y-5">
           <section className="grid gap-3 rounded-lg border border-gray-200 p-4 sm:grid-cols-2">
             <h3 className="font-semibold text-gray-800 sm:col-span-2">Cliente</h3>
-            <div className="flex flex-wrap gap-2 sm:col-span-2">
-              <button type="button" onClick={openCustomerModal} disabled={searchingCustomer} className="inline-flex items-center gap-2 rounded-lg border border-orange-500 px-4 py-2 font-medium text-orange-600 hover:bg-orange-50 disabled:opacity-50">
+            <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-2 sm:col-span-2">
+              <button type="button" onClick={openCustomerModal} disabled={searchingCustomer} className="inline-flex items-center gap-2 whitespace-nowrap rounded-lg border border-orange-500 px-4 py-2 font-medium text-orange-600 hover:bg-orange-50 disabled:opacity-50">
                 <Search className="h-4 w-4" />
                 {searchingCustomer ? 'Cargando clientes...' : 'Buscar cliente registrado'}
               </button>
-              {matchedCustomer && <button type="button" onClick={clearSelectedCustomer} className="rounded-lg border border-gray-300 px-4 py-2 text-gray-600 hover:bg-gray-50">Quitar seleccion</button>}
+              <input required type="text" placeholder="Nombre y apellido" value={customer.fullName} readOnly={matchedCustomer} onChange={(e) => setCustomer({ ...customer, fullName: e.target.value })} className="min-w-0 rounded-lg border border-gray-300 px-3 py-2 focus:ring-2 focus:ring-orange-500 read-only:bg-gray-100" />
+              {matchedCustomer && <button type="button" onClick={clearSelectedCustomer} className="col-span-2 justify-self-start rounded-lg border border-gray-300 px-4 py-2 text-gray-600 hover:bg-gray-50">Quitar seleccion</button>}
             </div>
-            <input required type="text" placeholder="Nombre y apellido" value={customer.fullName} readOnly={matchedCustomer} onChange={(e) => setCustomer({ ...customer, fullName: e.target.value })} className="rounded-lg border border-gray-300 px-3 py-2 focus:ring-2 focus:ring-orange-500 read-only:bg-gray-100" />
             {matchedCustomer && <input type="tel" value={customer.phone} readOnly placeholder="Sin telefono registrado" className="rounded-lg border border-gray-300 bg-gray-100 px-3 py-2 text-gray-600" />}
             {matchedCustomer && <input type="email" value={customer.email} readOnly placeholder="Sin correo registrado" className="rounded-lg border border-gray-300 bg-gray-100 px-3 py-2 text-gray-600 sm:col-span-2" />}
             {customerSearchMessage && <p className={`text-sm sm:col-span-2 ${matchedCustomer ? 'text-green-700' : 'text-gray-600'}`}>{customerSearchMessage}</p>}
@@ -1575,6 +1818,31 @@ function RestaurantOrderForm({
                   </tbody>
                 </table>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSuccessMessage && createdOrderTicket && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="created-order-title">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start gap-4">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-green-100 text-green-600">
+                <CheckCircle2 className="h-6 w-6" />
+              </div>
+              <div>
+                <h2 id="created-order-title" className="text-lg font-bold text-gray-800">Pedido creado correctamente</h2>
+                <p className="mt-1 text-sm text-gray-600">Pedido #{createdOrderTicket.orderId.slice(0, 8)}. Podés imprimir el ticket para adjuntarlo al pedido.</p>
+              </div>
+            </div>
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button type="button" onClick={onCreated} className="rounded-lg border border-gray-300 px-5 py-2 font-semibold text-gray-700 hover:bg-gray-50">
+                Finalizar
+              </button>
+              <button type="button" onClick={printOrderTicket} autoFocus className="inline-flex items-center justify-center gap-2 rounded-lg bg-orange-500 px-5 py-2 font-semibold text-white hover:bg-orange-600">
+                <Printer className="h-4 w-4" />
+                Imprimir ticket
+              </button>
             </div>
           </div>
         </div>

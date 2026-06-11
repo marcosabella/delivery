@@ -171,6 +171,91 @@ Deno.serve(async (req: Request) => {
       return json({ user: { id: created.id, email, role } }, 201);
     }
 
+    if (body.action === "update-driver") {
+      const userId = String(body.userId || "");
+      const restaurantId = String(body.restaurantId || "");
+      const email = String(body.email || "").trim().toLowerCase();
+      const fullName = String(body.fullName || "").trim();
+      const phone = body.phone ? String(body.phone).trim() : null;
+      const password = String(body.password || "");
+      const isActive = body.isActive !== false;
+
+      if (callerRole !== "admin" && callerRole !== "restaurant_owner") {
+        return json({ error: "Driver update access denied" }, 403);
+      }
+      if (!userId || !restaurantId || !email || !fullName || (password && password.length < 6)) {
+        return json({ error: "Invalid driver data" }, 400);
+      }
+
+      const assignmentResponse = await fetch(
+        `${supabaseUrl}/rest/v1/restaurant_drivers?restaurant_id=eq.${restaurantId}&driver_id=eq.${userId}&select=driver_id,driver:profiles!restaurant_drivers_driver_id_fkey(role)`,
+        { headers: { Authorization: `Bearer ${serviceRoleKey}`, apikey: serviceRoleKey } },
+      );
+      const assignments = assignmentResponse.ok ? await assignmentResponse.json() : [];
+      if (!assignments.length || assignments[0]?.driver?.role !== "driver") {
+        return json({ error: "Driver is not assigned to this restaurant" }, 404);
+      }
+
+      if (callerRole === "restaurant_owner") {
+        const ownershipResponse = await fetch(
+          `${supabaseUrl}/rest/v1/restaurants?id=eq.${restaurantId}&owner_id=eq.${caller.id}&select=id`,
+          { headers: { Authorization: `Bearer ${serviceRoleKey}`, apikey: serviceRoleKey } },
+        );
+        const ownedRestaurants = ownershipResponse.ok ? await ownershipResponse.json() : [];
+        if (!ownedRestaurants.length) return json({ error: "Restaurant access denied" }, 403);
+      }
+
+      const authUpdate: Record<string, unknown> = {
+        email,
+        email_confirm: true,
+        user_metadata: { full_name: fullName, phone },
+      };
+      if (password) authUpdate.password = password;
+
+      const authUpdateResponse = await fetch(`${supabaseUrl}/auth/v1/admin/users/${userId}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${serviceRoleKey}`,
+          apikey: serviceRoleKey,
+        },
+        body: JSON.stringify(authUpdate),
+      });
+      if (!authUpdateResponse.ok) {
+        const authError = await authUpdateResponse.json();
+        return json({ error: authError.message || authError }, authUpdateResponse.status);
+      }
+
+      const profileUpdateResponse = await fetch(`${supabaseUrl}/rest/v1/profiles?id=eq.${userId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${serviceRoleKey}`,
+          apikey: serviceRoleKey,
+          Prefer: "return=minimal",
+        },
+        body: JSON.stringify({ email, full_name: fullName, phone, updated_at: new Date().toISOString() }),
+      });
+      if (!profileUpdateResponse.ok) return json({ error: "Could not update driver profile" }, 500);
+
+      const assignmentUpdateResponse = await fetch(
+        `${supabaseUrl}/rest/v1/restaurant_drivers?restaurant_id=eq.${restaurantId}&driver_id=eq.${userId}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${serviceRoleKey}`,
+            apikey: serviceRoleKey,
+            Prefer: "return=minimal",
+          },
+          body: JSON.stringify({ is_active: isActive }),
+        },
+      );
+      if (!assignmentUpdateResponse.ok) return json({ error: "Could not update driver assignment" }, 500);
+
+      return json({ success: true });
+    }
+
     if (body.action === "delete") {
       if (callerRole !== "admin") return json({ error: "Admin access required" }, 403);
       const userId = String(body.userId || "");

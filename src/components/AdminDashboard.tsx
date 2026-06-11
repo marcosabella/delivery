@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, Profile, Restaurant } from '../lib/supabase';
 import { LogOut, Users, Store, Plus, Trash2, Search, Eye, EyeOff, CreditCard as Edit, Menu, X } from 'lucide-react';
+import { MessageModal } from './MessageModal';
 
 export function AdminDashboard() {
   const { profile, signOut } = useAuth();
@@ -14,6 +15,7 @@ export function AdminDashboard() {
   const [editingUser, setEditingUser] = useState<Profile | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
 
   useEffect(() => {
     loadRestaurants();
@@ -61,7 +63,7 @@ export function AdminDashboard() {
       });
 
       if (error) {
-        alert(`No se pudo eliminar el usuario: ${error.message}`);
+        setErrorMessage(`No se pudo eliminar el usuario: ${error.message}`);
         return;
       }
 
@@ -474,6 +476,10 @@ export function AdminDashboard() {
             loadUsers();
           }}
         />
+      )}
+
+      {errorMessage && (
+        <MessageModal type="error" message={errorMessage} onClose={() => setErrorMessage('')} />
       )}
     </div>
   );

@@ -4,6 +4,7 @@ import { supabase, Restaurant, MenuItem, Order } from '../lib/supabase';
 import { useGeolocation } from '../hooks/useGeolocation';
 import { addDefaultLocality } from '../lib/address';
 import { LogOut, Store, ShoppingCart, Clock, MapPin, Search, X, User, AlertCircle, CheckCircle, Home, Pencil, Menu } from 'lucide-react';
+import { MessageModal } from './MessageModal';
 
 type CartItem = MenuItem & { quantity: number };
 type DeliveryMethod = 'delivery' | 'pickup';
@@ -25,6 +26,7 @@ export function CustomerDashboard() {
   const [confirmedLocation, setConfirmedLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [addressSource, setAddressSource] = useState<'profile' | 'manual' | 'geolocation'>('profile');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [modalMessage, setModalMessage] = useState<{ message: string; type: 'error' | 'info' | 'success' } | null>(null);
   const didPrefillAddress = useRef(false);
 
   useEffect(() => {
@@ -135,7 +137,7 @@ export function CustomerDashboard() {
 
   async function handleCheckout(addressOverride?: string, locationOverride?: { lat: number; lng: number } | null) {
     if (!selectedRestaurant || cart.length === 0) {
-      alert('Por favor agrega productos al carrito');
+      setModalMessage({ type: 'info', message: 'Por favor agrega productos al carrito.' });
       return;
     }
 
@@ -148,7 +150,7 @@ export function CustomerDashboard() {
       : locationOverride === undefined ? confirmedLocation : locationOverride;
 
     if (!isPickup && !enteredAddress) {
-      alert('Por favor ingresa una dirección de entrega');
+      setModalMessage({ type: 'info', message: 'Por favor ingresa una dirección de entrega.' });
       return;
     }
 
@@ -176,7 +178,7 @@ export function CustomerDashboard() {
       .single();
 
     if (orderError || !order) {
-      alert('Error al crear el pedido');
+      setModalMessage({ type: 'error', message: 'No se pudo crear el pedido.' });
       return;
     }
 
@@ -191,7 +193,7 @@ export function CustomerDashboard() {
     const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
 
     if (itemsError) {
-      alert('Error al crear el pedido');
+      setModalMessage({ type: 'error', message: 'No se pudo guardar el detalle del pedido.' });
       return;
     }
 
@@ -203,7 +205,7 @@ export function CustomerDashboard() {
     setShowLocationConfirm(false);
     setConfirmedLocation(null);
     loadOrders();
-    alert('Pedido realizado con éxito!');
+    setModalMessage({ type: 'success', message: 'Pedido realizado con éxito.' });
   }
 
   const filteredRestaurants = restaurants.filter((r) =>
@@ -793,6 +795,14 @@ export function CustomerDashboard() {
             setConfirmedLocation(null);
             setAddressSource('manual');
           }}
+        />
+      )}
+
+      {modalMessage && (
+        <MessageModal
+          type={modalMessage.type}
+          message={modalMessage.message}
+          onClose={() => setModalMessage(null)}
         />
       )}
     </div>
