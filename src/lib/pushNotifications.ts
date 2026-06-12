@@ -4,6 +4,16 @@ const vapidPublicKey = import.meta.env.VITE_VAPID_PUBLIC_KEY;
 
 export type PushNotificationState = 'unsupported' | 'unconfigured' | 'denied' | 'disabled' | 'enabled';
 
+function isIos() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function isStandaloneDisplay() {
+  return window.matchMedia('(display-mode: standalone)').matches
+    || ('standalone' in navigator && Boolean((navigator as Navigator & { standalone?: boolean }).standalone));
+}
+
 function urlBase64ToUint8Array(value: string) {
   const padding = '='.repeat((4 - (value.length % 4)) % 4);
   const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
@@ -22,6 +32,15 @@ function applicationServerKeyMatches(subscription: PushSubscription, expectedKey
 
 export function isPushSupported() {
   return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+
+function validatePushEnvironment() {
+  if (!window.isSecureContext) {
+    throw new Error('Las notificaciones requieren abrir el sitio publicado con HTTPS.');
+  }
+  if (isIos() && !isStandaloneDisplay()) {
+    throw new Error('En iPhone o iPad, agrega este sitio a la pantalla de inicio y abre la app instalada para activar notificaciones.');
+  }
 }
 
 async function getRegistration() {
@@ -52,9 +71,19 @@ export async function getPushNotificationState(): Promise<PushNotificationState>
 export async function enablePushNotifications() {
   if (!isPushSupported()) throw new Error('Este navegador no admite notificaciones push.');
   if (!vapidPublicKey) throw new Error('Falta configurar VITE_VAPID_PUBLIC_KEY.');
+  validatePushEnvironment();
+
+  if (Notification.permission === 'denied') {
+    throw new Error('Las notificaciones estan bloqueadas para este sitio. Habilitalas desde el candado de la barra de direcciones y vuelve a intentarlo.');
+  }
 
   const permission = await Notification.requestPermission();
-  if (permission !== 'granted') throw new Error('El permiso de notificaciones no fue concedido.');
+  if (permission === 'denied') {
+    throw new Error('Bloqueaste las notificaciones. Habilitalas desde el candado de la barra de direcciones y vuelve a intentarlo.');
+  }
+  if (permission !== 'granted') {
+    throw new Error('No se completo la solicitud. Cuando aparezca el aviso del navegador, selecciona Permitir.');
+  }
 
   const registration = await ensureRegistration();
   const applicationServerKey = urlBase64ToUint8Array(vapidPublicKey);

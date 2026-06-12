@@ -24,14 +24,22 @@ export function PushNotificationControl() {
 
   useEffect(() => {
     let active = true;
-    void getPushNotificationState()
+    const refreshState = () => void getPushNotificationState()
       .then((nextState) => { if (active) setState(nextState); })
       .catch((caughtError) => {
         if (!active) return;
         setError(caughtError instanceof Error ? caughtError.message : 'No se pudo comprobar la configuracion push.');
       })
       .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
+
+    refreshState();
+    window.addEventListener('focus', refreshState);
+    document.addEventListener('visibilitychange', refreshState);
+    return () => {
+      active = false;
+      window.removeEventListener('focus', refreshState);
+      document.removeEventListener('visibilitychange', refreshState);
+    };
   }, []);
 
   if (!user) return null;
@@ -56,6 +64,9 @@ export function PushNotificationControl() {
   }
 
   const interactive = state === 'enabled' || state === 'disabled';
+  const helpText = state === 'denied'
+    ? 'Habilita Notificaciones desde el candado o la configuracion del sitio y vuelve a esta pantalla.'
+    : '';
   return (
     <div className="fixed bottom-4 left-4 z-[80] max-w-[calc(100%-2rem)]">
       <button
@@ -68,7 +79,7 @@ export function PushNotificationControl() {
         {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : state === 'enabled' ? <Bell className="h-4 w-4 text-emerald-600" /> : <BellOff className="h-4 w-4" />}
         {loading ? 'Comprobando...' : labels[state]}
       </button>
-      {error && <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 shadow">{error}</p>}
+      {(error || helpText) && <p className="mt-2 max-w-sm rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 shadow">{error || helpText}</p>}
     </div>
   );
 }
