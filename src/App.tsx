@@ -3,6 +3,7 @@ import { RestaurantDashboard } from './components/RestaurantDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
 import { DriverDashboard } from './components/DriverDashboard';
 import { Landing } from './components/Landing';
+import { PushNotificationControl } from './components/PushNotificationControl';
 import { isSupabaseConfigured, missingSupabaseEnv } from './lib/supabase';
 
 function ConfigurationError() {
@@ -76,11 +77,11 @@ function AppContent() {
   }
 
   if (profile.role === 'customer') {
-    return <Landing />;
+    return <><Landing /><PushNotificationControl /></>;
   }
 
   if (profile.role === 'restaurant_owner') {
-    return <RestaurantDashboard />;
+    return <><RestaurantDashboard /><PushNotificationControl /></>;
   }
 
   if (profile.role === 'driver') {

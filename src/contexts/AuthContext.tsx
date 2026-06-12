@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { User } from '@supabase/supabase-js';
 import { supabase, Profile } from '../lib/supabase';
+import { disablePushNotifications } from '../lib/pushNotifications';
 
 type AuthContextType = {
   user: User | null;
@@ -224,6 +225,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function signOut() {
+    try {
+      await disablePushNotifications();
+    } catch (error) {
+      console.error('Error removing push subscription:', error);
+    }
+
     setUser(null);
     setProfile(null);
     setAuthError(null);

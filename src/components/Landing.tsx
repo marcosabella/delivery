@@ -3,6 +3,8 @@ import {
   ArrowLeft,
   ArrowRight,
   BadgeCheck,
+  Bell,
+  BellRing,
   ChevronDown,
   ClipboardList,
   Clock3,
@@ -29,9 +31,19 @@ import { Auth } from './Auth';
 
 type CartItem = MenuItem & { quantity: number };
 type AccountView = 'cart' | 'orders' | 'favorites' | 'profile';
+type CustomerNotification = {
+  id: string;
+  orderId: string;
+  status: 'confirmed' | 'delivering';
+  title: string;
+  message: string;
+  createdAt: string;
+  read: boolean;
+};
 
 const CART_STORAGE_KEY = 'food-delivery-cart';
 const RESTAURANT_STORAGE_KEY = 'food-delivery-restaurant';
+const NOTIFICATIONS_STORAGE_KEY = 'food-delivery-notifications';
 
 function readStoredValue<T>(key: string, isValid: (value: unknown) => value is T): T | null {
   try {
@@ -55,6 +67,19 @@ function isStoredCart(value: unknown): value is CartItem[] {
 
 function isStoredRestaurant(value: unknown): value is Restaurant {
   return typeof value === 'object' && value !== null && typeof (value as Restaurant).id === 'string';
+}
+
+function getOrderErrorMessage(error: unknown) {
+  if (!error || typeof error !== 'object') return 'No se pudo crear el pedido. Intenta nuevamente.';
+
+  const { code, message } = error as { code?: string; message?: string };
+  if (code === '23503') return 'El restaurante o algun producto del carrito ya no esta disponible. Vacia el carrito y vuelve a elegir los productos.';
+  if (code === '42501') return 'Tu sesion no tiene permiso para crear el pedido. Cierra sesion, vuelve a ingresar e intenta nuevamente.';
+  if (message && /failed to fetch|networkerror|load failed/i.test(message)) {
+    return 'No se pudo conectar con el servidor. Revisa tu conexion e intenta nuevamente.';
+  }
+
+  return message ? `No se pudo crear el pedido: ${message}` : 'No se pudo crear el pedido. Intenta nuevamente.';
 }
 
 export function Landing() {
@@ -82,7 +107,12 @@ export function Landing() {
   const [deliveryAddress, setDeliveryAddress] = useState(profile?.delivery_address || '');
   const [deliveryLocation, setDeliveryLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [message, setMessage] = useState('');
+  const [notifications, setNotifications] = useState<CustomerNotification[]>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [notificationToast, setNotificationToast] = useState<CustomerNotification | null>(null);
   const profileMenuRef = useRef<HTMLDivElement>(null);
+  const notificationsRef = useRef<HTMLDivElement>(null);
+  const orderStatusesRef = useRef<Map<string, Order['status']>>(new Map());
   const categoryCarouselRef = useRef<HTMLDivElement>(null);
 
   function scrollCategories(direction: -1 | 1) {
@@ -95,6 +125,7 @@ export function Landing() {
   useEffect(() => {
     function closeProfileMenu(event: MouseEvent) {
       if (!profileMenuRef.current?.contains(event.target as Node)) setProfileMenu(false);
+      if (!notificationsRef.current?.contains(event.target as Node)) setShowNotifications(false);
     }
 
     function closeProfileMenuWithEscape(event: KeyboardEvent) {
@@ -108,6 +139,90 @@ export function Landing() {
       document.removeEventListener('keydown', closeProfileMenuWithEscape);
     };
   }, []);
+
+  useEffect(() => {
+    if (!profile) {
+      setOrders([]);
+      setNotifications([]);
+      orderStatusesRef.current.clear();
+      return;
+    }
+
+    const customerId = profile.id;
+    const storageKey = `${NOTIFICATIONS_STORAGE_KEY}-${customerId}`;
+    const storedNotifications = readStoredValue<CustomerNotification[]>(
+      storageKey,
+      (value): value is CustomerNotification[] => Array.isArray(value),
+    );
+    setNotifications(storedNotifications || []);
+
+    async function initializeOrders() {
+      const { data } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('customer_id', customerId)
+        .order('created_at', { ascending: false });
+
+      const customerOrders = data || [];
+      setOrders(customerOrders);
+      orderStatusesRef.current = new Map(customerOrders.map((order) => [order.id, order.status]));
+    }
+
+    void initializeOrders();
+
+    const channel = supabase
+      .channel(`customer-orders-${customerId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders', filter: `customer_id=eq.${customerId}` },
+        (payload) => {
+          const order = payload.new as Order;
+          if (!order?.id) return;
+
+          const previousStatus = orderStatusesRef.current.get(order.id);
+          orderStatusesRef.current.set(order.id, order.status);
+          setOrders((current) => {
+            const exists = current.some((item) => item.id === order.id);
+            return exists
+              ? current.map((item) => item.id === order.id ? order : item)
+              : [order, ...current];
+          });
+
+          if (previousStatus === order.status || (order.status !== 'confirmed' && order.status !== 'delivering')) return;
+
+          const notification: CustomerNotification = {
+            id: `${order.id}-${order.status}`,
+            orderId: order.id,
+            status: order.status,
+            title: order.status === 'confirmed' ? 'Pedido confirmado' : 'Tu pedido esta en reparto',
+            message: order.status === 'confirmed'
+              ? `El restaurante confirmo tu pedido #${order.id.slice(0, 8)}.`
+              : `Tu pedido #${order.id.slice(0, 8)} ya esta en camino.`,
+            createdAt: order.updated_at || new Date().toISOString(),
+            read: false,
+          };
+
+          setNotifications((current) => {
+            if (current.some((item) => item.id === notification.id)) return current;
+            const next = [notification, ...current].slice(0, 50);
+            localStorage.setItem(storageKey, JSON.stringify(next));
+            return next;
+          });
+          setNotificationToast(notification);
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [profile]);
+
+  useEffect(() => {
+    if (!notificationToast) return;
+    const timeout = window.setTimeout(() => setNotificationToast(null), 6000);
+    return () => window.clearTimeout(timeout);
+  }, [notificationToast]);
 
   useEffect(() => {
     async function loadCatalog() {
@@ -214,6 +329,28 @@ export function Landing() {
     setMobileMenu(false);
   }
 
+  function updateNotifications(updater: (current: CustomerNotification[]) => CustomerNotification[]) {
+    if (!profile) return;
+    setNotifications((current) => {
+      const next = updater(current);
+      localStorage.setItem(`${NOTIFICATIONS_STORAGE_KEY}-${profile.id}`, JSON.stringify(next));
+      return next;
+    });
+  }
+
+  function markAllNotificationsAsRead() {
+    updateNotifications((current) => current.map((notification) => ({ ...notification, read: true })));
+  }
+
+  function openNotification(notification: CustomerNotification) {
+    updateNotifications((current) => current.map((item) => (
+      item.id === notification.id ? { ...item, read: true } : item
+    )));
+    setShowNotifications(false);
+    setNotificationToast(null);
+    void openOrders();
+  }
+
   function openAccountView(view: AccountView) {
     setAccountView(view);
     setSelectedRestaurant(null);
@@ -305,8 +442,24 @@ export function Landing() {
 
   async function handleCheckout() {
     if (!profile || !cartRestaurant || cart.length === 0) return;
+    const currentRestaurant = restaurants.find((restaurant) => restaurant.id === cartRestaurant.id);
+    if (!currentRestaurant?.is_active) {
+      setMessage('Este restaurante ya no esta disponible. Vacia el carrito y elige otro restaurante.');
+      return;
+    }
+
+    const availableItemIds = new Set(
+      menuItems
+        .filter((item) => item.restaurant_id === currentRestaurant.id && item.is_available)
+        .map((item) => item.id),
+    );
+    if (cart.some((item) => !availableItemIds.has(item.id))) {
+      setMessage('Uno o mas productos del carrito ya no estan disponibles. Vacia el carrito y vuelve a agregarlos.');
+      return;
+    }
+
     const address = deliveryMethod === 'pickup'
-      ? cartRestaurant.address?.trim() || 'Retira en restaurante'
+      ? currentRestaurant.address?.trim() || 'Retira en restaurante'
       : deliveryAddress.trim();
 
     if (!address) {
@@ -316,50 +469,63 @@ export function Landing() {
 
     setSubmittingOrder(true);
     setMessage('');
-    const { data: order, error: orderError } = await supabase
-      .from('orders')
-      .insert({
-        customer_id: profile.id,
-        restaurant_id: cartRestaurant.id,
-        total_amount: cartTotal,
-        delivery_method: deliveryMethod,
-        delivery_address: address,
-        status: 'pending',
-        latitude: deliveryMethod === 'delivery' ? deliveryLocation?.latitude ?? null : null,
-        longitude: deliveryMethod === 'delivery' ? deliveryLocation?.longitude ?? null : null,
-      })
-      .select()
-      .single();
+    try {
+      const { data: { user: currentUser }, error: userError } = await supabase.auth.getUser();
+      if (userError || !currentUser || currentUser.id !== profile.id) {
+        if (userError) console.error('Error validating checkout session:', userError);
+        setMessage('Tu sesion vencio. Cierra sesion, vuelve a ingresar e intenta nuevamente.');
+        return;
+      }
 
-    if (orderError || !order) {
-      setMessage('No se pudo crear el pedido. Intenta nuevamente.');
+      const { data: order, error: orderError } = await supabase
+        .from('orders')
+        .insert({
+          customer_id: profile.id,
+          restaurant_id: currentRestaurant.id,
+          total_amount: cartTotal,
+          delivery_method: deliveryMethod,
+          delivery_address: address,
+          status: 'pending',
+          latitude: deliveryMethod === 'delivery' ? deliveryLocation?.latitude ?? null : null,
+          longitude: deliveryMethod === 'delivery' ? deliveryLocation?.longitude ?? null : null,
+        })
+        .select()
+        .single();
+
+      if (orderError || !order) {
+        console.error('Error creating order:', orderError);
+        setMessage(getOrderErrorMessage(orderError));
+        return;
+      }
+
+      const { error: itemsError } = await supabase.from('order_items').insert(
+        cart.map((item) => ({
+          order_id: order.id,
+          menu_item_id: item.id,
+          quantity: item.quantity,
+          unit_price: item.price,
+          subtotal: item.price * item.quantity,
+        })),
+      );
+
+      if (itemsError) {
+        console.error('Error creating order items:', itemsError);
+        setMessage(getOrderErrorMessage(itemsError));
+        return;
+      }
+
+      setCart([]);
+      setCartRestaurant(null);
+      localStorage.removeItem(CART_STORAGE_KEY);
+      localStorage.removeItem(RESTAURANT_STORAGE_KEY);
+      setShowCart(false);
+      await openOrders();
+    } catch (error) {
+      console.error('Unexpected checkout error:', error);
+      setMessage(getOrderErrorMessage(error));
+    } finally {
       setSubmittingOrder(false);
-      return;
     }
-
-    const { error: itemsError } = await supabase.from('order_items').insert(
-      cart.map((item) => ({
-        order_id: order.id,
-        menu_item_id: item.id,
-        quantity: item.quantity,
-        unit_price: item.price,
-        subtotal: item.price * item.quantity,
-      })),
-    );
-
-    if (itemsError) {
-      setMessage('El pedido fue creado, pero no se pudo guardar su detalle.');
-      setSubmittingOrder(false);
-      return;
-    }
-
-    setCart([]);
-    setCartRestaurant(null);
-    localStorage.removeItem(CART_STORAGE_KEY);
-    localStorage.removeItem(RESTAURANT_STORAGE_KEY);
-    setShowCart(false);
-    setSubmittingOrder(false);
-    await openOrders();
   }
 
   const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
@@ -367,6 +533,7 @@ export function Landing() {
   const profileLabel = profile?.full_name?.trim() || 'Mi perfil';
   const favoriteRestaurants = restaurants.filter((restaurant) => favoriteRestaurantIds.has(restaurant.id));
   const favoriteMenuItems = menuItems.filter((item) => favoriteMenuItemIds.has(item.id));
+  const unreadNotifications = notifications.filter((notification) => !notification.read).length;
 
   return (
     <div className="min-h-screen bg-[#fffaf7] text-slate-900">
@@ -383,6 +550,30 @@ export function Landing() {
             <a href="#suma-tu-comercio" onClick={() => { setAccountView(null); setSelectedRestaurant(null); }} className="font-semibold text-orange-600 hover:text-orange-700">Suma tu comercio</a>
           </nav>
           <div className="flex items-center gap-2">
+            {user && <div ref={notificationsRef} className="relative">
+              <button
+                type="button"
+                onClick={() => { setShowNotifications((open) => !open); setProfileMenu(false); }}
+                className="relative rounded-xl border border-slate-200 p-2.5 text-slate-700 hover:bg-slate-50"
+                aria-label="Abrir notificaciones"
+                aria-expanded={showNotifications}
+              >
+                <Bell className="h-5 w-5" />
+                {unreadNotifications > 0 && <span className="absolute -right-2 -top-2 min-w-5 rounded-full bg-red-500 px-1 text-center text-xs font-bold text-white">{unreadNotifications > 9 ? '9+' : unreadNotifications}</span>}
+              </button>
+              {showNotifications && <div className="fixed inset-x-4 top-20 z-50 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 sm:w-96">
+                <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+                  <div><h2 className="font-bold text-slate-900">Notificaciones</h2><p className="text-xs text-slate-500">Novedades de tus pedidos</p></div>
+                  {unreadNotifications > 0 && <button type="button" onClick={markAllNotificationsAsRead} className="text-xs font-semibold text-orange-600 hover:text-orange-700">Marcar leidas</button>}
+                </div>
+                <div className="max-h-[60vh] overflow-y-auto">
+                  {notifications.length === 0 ? <div className="px-5 py-10 text-center text-slate-400"><Bell className="mx-auto h-10 w-10" /><p className="mt-3 text-sm">Todavia no tenes notificaciones.</p></div> : notifications.map((notification) => <button key={notification.id} type="button" onClick={() => openNotification(notification)} className={`flex w-full gap-3 border-b border-slate-100 px-4 py-4 text-left transition hover:bg-orange-50 ${notification.read ? 'bg-white' : 'bg-orange-50/60'}`}>
+                    <span className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${notification.status === 'confirmed' ? 'bg-blue-100 text-blue-700' : 'bg-cyan-100 text-cyan-700'}`}><BellRing className="h-4 w-4" /></span>
+                    <span className="min-w-0 flex-1"><span className="flex items-center gap-2 font-semibold text-slate-900">{notification.title}{!notification.read && <span className="h-2 w-2 rounded-full bg-orange-500" />}</span><span className="mt-1 block text-sm text-slate-600">{notification.message}</span><span className="mt-2 block text-xs text-slate-400">{new Date(notification.createdAt).toLocaleString('es-AR')}</span></span>
+                  </button>)}
+                </div>
+              </div>}
+            </div>}
             <button onClick={() => setShowCart(true)} className="relative rounded-xl border border-slate-200 p-2.5 text-slate-700 hover:bg-slate-50" aria-label="Abrir carrito">
               <ShoppingBag className="h-5 w-5" />
               {cartCount > 0 && <span className="absolute -right-2 -top-2 min-w-5 rounded-full bg-orange-500 px-1 text-center text-xs font-bold text-white">{cartCount}</span>}
@@ -414,6 +605,11 @@ export function Landing() {
         </div>
         {mobileMenu && <div className="border-t bg-white px-4 py-4 md:hidden"><div className="flex flex-col gap-3 text-sm font-medium"><a href="#restaurantes" onClick={() => { setAccountView(null); setSelectedRestaurant(null); setMobileMenu(false); }}>Restaurantes</a><a href="#platos" onClick={() => { setAccountView(null); setSelectedRestaurant(null); setMobileMenu(false); }}>Platos</a><a href="#suma-tu-comercio" onClick={() => { setAccountView(null); setSelectedRestaurant(null); setMobileMenu(false); }} className="text-orange-600">Suma tu comercio</a>{user ? <details className="group"><summary className="flex cursor-pointer list-none items-center justify-between gap-2 py-1"><span className="truncate">{profileLabel}</span> <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" /></summary><div className="mt-2 flex flex-col gap-3 border-l-2 border-orange-100 pl-4"><button onClick={() => openAccountView('cart')} className="flex items-center gap-2 text-left"><ShoppingBag className="h-4 w-4" /> Mi carrito {cartCount > 0 && <span className="rounded-full bg-orange-500 px-1.5 text-xs text-white">{cartCount}</span>}</button><button onClick={openOrders} className="flex items-center gap-2 text-left"><Clock3 className="h-4 w-4" /> Mis pedidos</button><button onClick={() => openAccountView('favorites')} className="flex items-center gap-2 text-left"><Heart className="h-4 w-4" /> Mis favoritos</button><button onClick={() => openAccountView('profile')} className="flex items-center gap-2 text-left"><User className="h-4 w-4" /> Datos de mi perfil</button><button onClick={() => { setMobileMenu(false); void signOut(); }} className="flex items-center gap-2 text-left text-red-600"><LogOut className="h-4 w-4" /> Cerrar sesión</button></div></details> : <button onClick={() => setShowAuth(true)} className="text-left text-orange-600">Ingresar o registrarme</button>}</div></div>}
       </header>
+
+      {notificationToast && <button type="button" onClick={() => openNotification(notificationToast)} className="fixed bottom-4 right-4 z-[70] flex w-[calc(100%-2rem)] max-w-sm gap-3 rounded-2xl border border-orange-200 bg-white p-4 text-left shadow-2xl" role="status">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-orange-100 text-orange-600"><BellRing className="h-5 w-5" /></span>
+        <span><span className="block font-bold text-slate-900">{notificationToast.title}</span><span className="mt-1 block text-sm text-slate-600">{notificationToast.message}</span></span>
+      </button>}
 
       <main>
         {accountView === 'cart' ? (

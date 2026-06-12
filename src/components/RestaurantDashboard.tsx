@@ -29,6 +29,9 @@ import {
   Printer,
   UserPlus,
   Users,
+  LayoutDashboard,
+  Bell,
+  DollarSign,
 } from 'lucide-react';
 
 type RestaurantOrder = Order & {
@@ -154,7 +157,7 @@ export function RestaurantDashboard() {
   const [orders, setOrders] = useState<RestaurantOrder[]>([]);
   const [showMenuForm, setShowMenuForm] = useState(false);
   const [showOrderForm, setShowOrderForm] = useState(false);
-  const [activeTab, setActiveTab] = useState<'menu' | 'orders' | 'route' | 'drivers'>('orders');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'menu' | 'orders' | 'route' | 'drivers'>('dashboard');
   const [activeOrderGroupId, setActiveOrderGroupId] = useState<OrderGroupId>('pending');
   const [orderHistoryPeriod, setOrderHistoryPeriod] = useState<HistoryPeriod>('today');
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
@@ -171,6 +174,7 @@ export function RestaurantDashboard() {
   const [editingDriver, setEditingDriver] = useState<RestaurantDriver | null>(null);
   const [routeError, setRouteError] = useState('');
   const [dispatchingRoute, setDispatchingRoute] = useState(false);
+  const [newOrderNotification, setNewOrderNotification] = useState<{ id: string; total: number } | null>(null);
 
   useEffect(() => {
     if (profile) {
@@ -190,6 +194,31 @@ export function RestaurantDashboard() {
   useEffect(() => {
     if (selectedRestaurant) loadRoutes();
   }, [selectedRestaurant, routeHistoryPeriod]);
+
+  useEffect(() => {
+    if (!newOrderNotification) return;
+    const timeoutId = window.setTimeout(() => setNewOrderNotification(null), 8000);
+    return () => window.clearTimeout(timeoutId);
+  }, [newOrderNotification]);
+
+  useEffect(() => {
+    if (!selectedRestaurant) return;
+    const channel = supabase
+      .channel(`restaurant-orders-${selectedRestaurant.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders', filter: `restaurant_id=eq.${selectedRestaurant.id}` },
+        (payload) => {
+          void loadOrders();
+          if (payload.eventType === 'INSERT') {
+            const newOrder = payload.new as Order;
+            setNewOrderNotification({ id: newOrder.id, total: newOrder.total_amount });
+          }
+        },
+      )
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [selectedRestaurant]);
 
   useEffect(() => {
     if (!selectedRestaurant) return;
@@ -340,6 +369,23 @@ export function RestaurantDashboard() {
     setShowOrderDetail(true);
   }
 
+  function openOrders(groupId: OrderGroupId, orderId?: string) {
+    setActiveTab('orders');
+    setActiveOrderGroupId(groupId);
+    if (orderId) handleOpenOrderDetail(orderId);
+    else {
+      setShowOrderDetail(false);
+      setSelectedOrderId(null);
+    }
+  }
+
+  function getOrderGroupId(status: Order['status']): OrderGroupId {
+    if (status === 'pending') return 'pending';
+    if (status === 'delivering') return 'delivery';
+    if (status === 'delivered' || status === 'cancelled') return 'closed';
+    return 'kitchen';
+  }
+
   async function handleDispatchRoute() {
     if (!selectedRestaurant || routeOrderIds.length === 0 || !selectedDriverId) return;
     setDispatchingRoute(true);
@@ -414,6 +460,16 @@ export function RestaurantDashboard() {
   ];
   const activeOrderGroup = orderGroups.find((group) => group.id === activeOrderGroupId) || orderGroups[0];
   const ActiveOrderGroupIcon = activeOrderGroup.icon;
+  const pendingOrdersCount = orderGroups.find((group) => group.id === 'pending')?.orders.length || 0;
+  const confirmedOrdersCount = orders.filter((order) => order.status === 'confirmed').length;
+  const preparingOrdersCount = orders.filter((order) => order.status === 'preparing').length;
+  const deliveringOrdersCount = orders.filter((order) => order.status === 'delivering').length;
+  const activeDriversCount = drivers.filter((item) => item.is_active).length;
+  const todayOrders = orders.filter((order) => new Date(order.created_at).toDateString() === new Date().toDateString());
+  const todayRevenue = todayOrders
+    .filter((order) => order.status !== 'cancelled')
+    .reduce((total, order) => total + order.total_amount, 0);
+  const recentOrders = orders.slice(0, 6);
   const routeOrigin = selectedRestaurant?.address?.trim() || '';
   const routeMapUrl = routeOrders.length > 0 ? getRouteMapUrl() : '';
   const routeEmbedUrl = routeOrders.length > 0 ? getRouteEmbedUrl() : '';
@@ -684,6 +740,7 @@ export function RestaurantDashboard() {
   }
 
   const restaurantNavItems = [
+    { id: 'dashboard' as const, label: 'Resumen', icon: LayoutDashboard },
     { id: 'orders' as const, label: 'Pedidos', icon: PackageCheck },
     { id: 'route' as const, label: 'Hoja de ruta', icon: Route },
     { id: 'menu' as const, label: 'Menu', icon: UtensilsCrossed },
@@ -715,7 +772,12 @@ export function RestaurantDashboard() {
                 }`}
               >
                 <Icon className="h-4 w-4" />
-                {item.label}
+                <span className="flex-1 text-left">{item.label}</span>
+                {item.id === 'orders' && pendingOrdersCount > 0 && (
+                  <span className="flex min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 py-0.5 text-[11px] font-bold leading-none text-white">
+                    {pendingOrdersCount > 99 ? '99+' : pendingOrdersCount}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -781,7 +843,12 @@ export function RestaurantDashboard() {
                   }`}
                 >
                   <Icon className="h-4 w-4" />
-                  {item.label}
+                  <span className="flex-1 text-left">{item.label}</span>
+                  {item.id === 'orders' && pendingOrdersCount > 0 && (
+                    <span className="flex min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 py-0.5 text-[11px] font-bold leading-none text-white">
+                      {pendingOrdersCount > 99 ? '99+' : pendingOrdersCount}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -832,12 +899,8 @@ export function RestaurantDashboard() {
           </div>
         ) : (
           <>
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
-              <div className="flex-1">
-                <h1 className="text-xl font-semibold text-gray-800">{selectedRestaurant?.name}</h1>
-                <p className="text-sm text-gray-600">{selectedRestaurant?.address}</p>
-              </div>
-              {restaurants.length > 1 && (
+            {restaurants.length > 1 && (
+              <div className="mb-4 flex justify-end">
                 <select
                   value={selectedRestaurant?.id || ''}
                   onChange={(e) => {
@@ -852,8 +915,8 @@ export function RestaurantDashboard() {
                     </option>
                   ))}
                 </select>
-              )}
-            </div>
+              </div>
+            )}
 
             <div className="rounded-lg bg-white shadow-sm">
               <div className="hidden">
@@ -882,6 +945,77 @@ export function RestaurantDashboard() {
               </div>
 
               <div className="p-4 sm:p-5">
+                {activeTab === 'dashboard' && (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-xl font-bold text-gray-800">Resumen operativo</h2>
+                      <p className="text-sm text-gray-600">Estado actual del restaurante y sus pedidos.</p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+                      <button type="button" onClick={() => openOrders('pending')} className="rounded-xl border border-yellow-200 bg-yellow-50 p-4 text-left transition hover:border-yellow-300 hover:shadow-sm">
+                        <div className="mb-3 flex items-center justify-between"><Clock className="h-5 w-5 text-yellow-700" /><span className="rounded-full bg-yellow-200 px-2 py-0.5 text-xs font-semibold text-yellow-800">Ahora</span></div>
+                        <p className="text-2xl font-bold text-gray-900">{pendingOrdersCount}</p>
+                        <p className="text-sm font-medium text-gray-600">Pedidos nuevos</p>
+                      </button>
+                      <button type="button" onClick={() => openOrders('kitchen')} className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-left transition hover:border-blue-300 hover:shadow-sm">
+                        <PackageCheck className="mb-3 h-5 w-5 text-blue-700" />
+                        <p className="text-2xl font-bold text-gray-900">{confirmedOrdersCount}</p>
+                        <p className="text-sm font-medium text-gray-600">Recibidos</p>
+                      </button>
+                      <button type="button" onClick={() => openOrders('kitchen')} className="rounded-xl border border-orange-200 bg-orange-50 p-4 text-left transition hover:border-orange-300 hover:shadow-sm">
+                        <ChefHat className="mb-3 h-5 w-5 text-orange-700" />
+                        <p className="text-2xl font-bold text-gray-900">{preparingOrdersCount}</p>
+                        <p className="text-sm font-medium text-gray-600">En preparacion</p>
+                      </button>
+                      <button type="button" onClick={() => openOrders('delivery')} className="rounded-xl border border-cyan-200 bg-cyan-50 p-4 text-left transition hover:border-cyan-300 hover:shadow-sm">
+                        <Bike className="mb-3 h-5 w-5 text-cyan-700" />
+                        <p className="text-2xl font-bold text-gray-900">{deliveringOrdersCount}</p>
+                        <p className="text-sm font-medium text-gray-600">En reparto</p>
+                      </button>
+                      <button type="button" onClick={() => setActiveTab('drivers')} className="rounded-xl border border-green-200 bg-green-50 p-4 text-left transition hover:border-green-300 hover:shadow-sm">
+                        <Users className="mb-3 h-5 w-5 text-green-700" />
+                        <p className="text-2xl font-bold text-gray-900">{activeDriversCount}</p>
+                        <p className="text-sm font-medium text-gray-600">Repartidores activos</p>
+                      </button>
+                      <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
+                        <DollarSign className="mb-3 h-5 w-5 text-violet-700" />
+                        <p className="truncate text-2xl font-bold text-gray-900">{moneyFormatter.format(todayRevenue)}</p>
+                        <p className="text-sm font-medium text-gray-600">Ventas de hoy</p>
+                      </div>
+                    </div>
+
+                    <section className="overflow-hidden rounded-xl border border-gray-200">
+                      <div className="flex items-center justify-between border-b border-gray-200 bg-gray-50 px-4 py-3">
+                        <div>
+                          <h3 className="font-semibold text-gray-800">Ultimos pedidos</h3>
+                          <p className="text-xs text-gray-500">Actualizacion en tiempo real</p>
+                        </div>
+                        <button type="button" onClick={() => openOrders('pending')} className="text-sm font-semibold text-orange-600 hover:text-orange-700">Ver todos</button>
+                      </div>
+                      {recentOrders.length === 0 ? (
+                        <div className="py-10 text-center text-sm text-gray-500">Todavia no hay pedidos.</div>
+                      ) : (
+                        <div className="divide-y divide-gray-100">
+                          {recentOrders.map((order) => (
+                            <button
+                              key={order.id}
+                              type="button"
+                              onClick={() => openOrders(getOrderGroupId(order.status), order.id)}
+                              className="grid w-full grid-cols-[1fr_auto] items-center gap-3 px-4 py-3 text-left transition hover:bg-gray-50 sm:grid-cols-[110px_1fr_130px_120px]"
+                            >
+                              <span className="font-semibold text-orange-600">#{order.id.slice(0, 8)}</span>
+                              <span className="min-w-0"><span className="block truncate text-sm font-medium text-gray-800">{getCustomerName(order)}</span><span className="block text-xs text-gray-500">{new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></span>
+                              <span className={`hidden justify-self-start rounded-full px-2 py-1 text-xs font-medium sm:inline-flex ${statusColors[order.status]}`}>{statusLabels[order.status]}</span>
+                              <span className="font-semibold text-gray-800 sm:text-right">{moneyFormatter.format(order.total_amount)}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  </div>
+                )}
+
                 {activeTab === 'menu' && (
                   <div>
                     <div className="flex justify-between items-center mb-6">
@@ -901,21 +1035,21 @@ export function RestaurantDashboard() {
                         <p className="text-gray-600">No hay elementos en el menú</p>
                       </div>
                     ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                         {menuItems.map((item) => (
                           <div key={item.id} className="border rounded-lg overflow-hidden hover:shadow-md transition flex flex-col">
                             {item.image_url ? (
-                              <img src={item.image_url} alt={item.name} className="w-full h-40 object-cover" />
+                              <img src={item.image_url} alt={item.name} className="h-32 w-full object-cover" />
                             ) : (
-                              <div className="w-full h-40 bg-gray-100 flex items-center justify-center">
+                              <div className="flex h-32 w-full items-center justify-center bg-gray-100">
                                 <ImageIcon className="w-8 h-8 text-gray-400" />
                               </div>
                             )}
-                            <div className="p-4 flex-1 flex flex-col">
+                            <div className="flex flex-1 flex-col p-3">
                               <div className="flex justify-between items-start mb-2">
                                 <div className="flex-1">
                                   <h3 className="font-semibold text-gray-800">{item.name}</h3>
-                                  <p className="text-sm text-gray-600 mt-1">{item.description}</p>
+                                  <p className="mt-1 line-clamp-2 text-sm text-gray-600">{item.description}</p>
                                   {item.category && (
                                     <span className="inline-block text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded mt-2">
                                       {item.category}
@@ -1431,25 +1565,36 @@ export function RestaurantDashboard() {
                       <button onClick={() => setShowDriverForm(true)} className="inline-flex items-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600"><UserPlus className="h-4 w-4" />Nuevo repartidor</button>
                     </div>
                     {drivers.length === 0 ? <div className="rounded-lg border border-dashed border-gray-300 py-10 text-center text-sm text-gray-500">No hay repartidores cargados.</div> : (
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        {drivers.map((item) => (
-                          <div key={item.driver_id} className="rounded-lg border border-gray-200 p-4">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <p className="font-semibold text-gray-800">{item.driver.full_name}</p>
-                                <p className="truncate text-sm text-gray-500">{item.driver.email}</p>
-                                {item.driver.phone && <p className="text-sm text-gray-500">{item.driver.phone}</p>}
-                              </div>
-                              <div className="flex shrink-0 flex-col items-end gap-2">
-                                <span className={`rounded-full px-2 py-1 text-xs font-medium ${item.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{item.is_active ? 'Activo' : 'Inactivo'}</span>
-                                <button type="button" onClick={() => setEditingDriver(item)} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">
-                                  <Edit2 className="h-4 w-4" />
-                                  Editar
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
+                      <div className="overflow-x-auto rounded-lg border border-gray-200">
+                        <table className="min-w-full divide-y divide-gray-200 text-left text-sm">
+                          <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
+                            <tr>
+                              <th className="px-4 py-3 font-semibold">Nombre</th>
+                              <th className="px-4 py-3 font-semibold">Email</th>
+                              <th className="px-4 py-3 font-semibold">Teléfono</th>
+                              <th className="px-4 py-3 font-semibold">Estado</th>
+                              <th className="px-4 py-3 text-right font-semibold">Acciones</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-200 bg-white">
+                            {drivers.map((item) => (
+                              <tr key={item.driver_id} className="hover:bg-gray-50">
+                                <td className="whitespace-nowrap px-4 py-3 font-semibold text-gray-800">{item.driver.full_name}</td>
+                                <td className="px-4 py-3 text-gray-600">{item.driver.email}</td>
+                                <td className="whitespace-nowrap px-4 py-3 text-gray-600">{item.driver.phone || '-'}</td>
+                                <td className="whitespace-nowrap px-4 py-3">
+                                  <span className={`rounded-full px-2 py-1 text-xs font-medium ${item.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{item.is_active ? 'Activo' : 'Inactivo'}</span>
+                                </td>
+                                <td className="whitespace-nowrap px-4 py-3 text-right">
+                                  <button type="button" onClick={() => setEditingDriver(item)} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100">
+                                    <Edit2 className="h-4 w-4" />
+                                    Editar
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
                       </div>
                     )}
                   </section>
@@ -1460,6 +1605,32 @@ export function RestaurantDashboard() {
         )}
         </main>
       </div>
+
+      {newOrderNotification && (
+        <div className="fixed bottom-4 right-4 z-[80] w-[calc(100%-2rem)] max-w-sm overflow-hidden rounded-xl border border-orange-200 bg-white shadow-2xl" role="status" aria-live="assertive">
+          <div className="flex items-start gap-3 p-4">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-orange-100 text-orange-600">
+              <Bell className="h-5 w-5" />
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                openOrders('pending', newOrderNotification.id);
+                setNewOrderNotification(null);
+              }}
+              className="min-w-0 flex-1 text-left"
+            >
+              <p className="font-bold text-gray-900">Nuevo pedido recibido</p>
+              <p className="mt-0.5 text-sm text-gray-600">Pedido #{newOrderNotification.id.slice(0, 8)} por {moneyFormatter.format(newOrderNotification.total)}</p>
+              <p className="mt-2 text-xs font-semibold text-orange-600">Abrir pedido</p>
+            </button>
+            <button type="button" onClick={() => setNewOrderNotification(null)} className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600" aria-label="Cerrar notificacion">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="h-1 bg-orange-500" />
+        </div>
+      )}
 
       {showMenuForm && selectedRestaurant && (
         <MenuItemForm
