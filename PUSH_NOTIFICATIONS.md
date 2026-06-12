@@ -37,6 +37,9 @@ En Supabase Dashboard, abrir `Database > Webhooks` y crear uno con:
 - Function: `push-notifications`
 - Header: `x-webhook-secret: <PUSH_WEBHOOK_SECRET>`
 
+El header HTTP debe llamarse exactamente `x-webhook-secret`. No colocar el secreto
+como valor de `Content-Type`; esa cabecera debe conservar el valor `application/json`.
+
 El webhook avisa al restaurante cuando entra un pedido y al cliente cuando cambia su estado.
 
 ## iPhone/iPad

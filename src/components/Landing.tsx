@@ -28,6 +28,7 @@ import { supabase, DishCategory, MenuItem, Order, Profile, Restaurant } from '..
 import { useAuth } from '../contexts/AuthContext';
 import { useGeolocation } from '../hooks/useGeolocation';
 import { Auth } from './Auth';
+import { PushNotificationControl } from './PushNotificationControl';
 
 type CartItem = MenuItem & { quantity: number };
 type AccountView = 'cart' | 'orders' | 'favorites' | 'profile';
@@ -67,6 +68,22 @@ function isStoredCart(value: unknown): value is CartItem[] {
 
 function isStoredRestaurant(value: unknown): value is Restaurant {
   return typeof value === 'object' && value !== null && typeof (value as Restaurant).id === 'string';
+}
+
+function createCustomerNotification(order: Order): CustomerNotification | null {
+  if (order.status !== 'confirmed' && order.status !== 'delivering') return null;
+
+  return {
+    id: `${order.id}-${order.status}`,
+    orderId: order.id,
+    status: order.status,
+    title: order.status === 'confirmed' ? 'Pedido confirmado' : 'Tu pedido esta en reparto',
+    message: order.status === 'confirmed'
+      ? `El restaurante confirmo tu pedido #${order.id.slice(0, 8)}.`
+      : `Tu pedido #${order.id.slice(0, 8)} ya esta en camino.`,
+    createdAt: order.updated_at || new Date().toISOString(),
+    read: false,
+  };
 }
 
 function getOrderErrorMessage(error: unknown) {
@@ -166,6 +183,21 @@ export function Landing() {
       const customerOrders = data || [];
       setOrders(customerOrders);
       orderStatusesRef.current = new Map(customerOrders.map((order) => [order.id, order.status]));
+
+      const recoveredNotifications = customerOrders
+        .map(createCustomerNotification)
+        .filter((notification): notification is CustomerNotification => notification !== null)
+        .filter((notification) => !storedNotifications?.some((stored) => stored.id === notification.id))
+        .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+
+      if (recoveredNotifications.length > 0) {
+        const next = [...recoveredNotifications, ...(storedNotifications || [])]
+          .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+          .slice(0, 50);
+        localStorage.setItem(storageKey, JSON.stringify(next));
+        setNotifications(next);
+        setNotificationToast(recoveredNotifications[0]);
+      }
     }
 
     void initializeOrders();
@@ -188,19 +220,10 @@ export function Landing() {
               : [order, ...current];
           });
 
-          if (previousStatus === order.status || (order.status !== 'confirmed' && order.status !== 'delivering')) return;
+          if (previousStatus === order.status) return;
 
-          const notification: CustomerNotification = {
-            id: `${order.id}-${order.status}`,
-            orderId: order.id,
-            status: order.status,
-            title: order.status === 'confirmed' ? 'Pedido confirmado' : 'Tu pedido esta en reparto',
-            message: order.status === 'confirmed'
-              ? `El restaurante confirmo tu pedido #${order.id.slice(0, 8)}.`
-              : `Tu pedido #${order.id.slice(0, 8)} ya esta en camino.`,
-            createdAt: order.updated_at || new Date().toISOString(),
-            read: false,
-          };
+          const notification = createCustomerNotification(order);
+          if (!notification) return;
 
           setNotifications((current) => {
             if (current.some((item) => item.id === notification.id)) return current;
@@ -1149,6 +1172,7 @@ function ProfileView({ profile, onSaved, onBack }: { profile: Profile; onSaved: 
                 </div>
                 <label className="block text-sm font-medium text-slate-700">Nombre completo<input required value={fullName} onChange={(event) => setFullName(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 p-3 outline-none focus:border-orange-500" /></label>
                 <label className="block text-sm font-medium text-slate-700">Teléfono<input value={phone} onChange={(event) => setPhone(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 p-3 outline-none focus:border-orange-500" /></label>
+                <PushNotificationControl />
               </div>
             ) : (
               <div className="space-y-4">

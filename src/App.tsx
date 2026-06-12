@@ -1,5 +1,6 @@
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { RestaurantDashboard } from './components/RestaurantDashboard';
+import { RestaurantNotificationGate } from './components/RestaurantNotificationGate';
 import { AdminDashboard } from './components/AdminDashboard';
 import { DriverDashboard } from './components/DriverDashboard';
 import { Landing } from './components/Landing';
@@ -81,7 +82,11 @@ function AppContent() {
   }
 
   if (profile.role === 'restaurant_owner') {
-    return <><RestaurantDashboard /><PushNotificationControl /></>;
+    return (
+      <RestaurantNotificationGate>
+        <RestaurantDashboard />
+      </RestaurantNotificationGate>
+    );
   }
 
   if (profile.role === 'driver') {

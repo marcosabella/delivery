@@ -6,6 +6,7 @@ import {
   enablePushNotifications,
   getPushNotificationState,
   PushNotificationState,
+  syncPushSubscription,
 } from '../lib/pushNotifications';
 
 const labels: Record<PushNotificationState, string> = {
@@ -24,7 +25,8 @@ export function PushNotificationControl() {
 
   useEffect(() => {
     let active = true;
-    const refreshState = () => void getPushNotificationState()
+    const refreshState = () => void (user ? syncPushSubscription() : Promise.resolve())
+      .then(() => getPushNotificationState())
       .then((nextState) => { if (active) setState(nextState); })
       .catch((caughtError) => {
         if (!active) return;
@@ -40,7 +42,7 @@ export function PushNotificationControl() {
       window.removeEventListener('focus', refreshState);
       document.removeEventListener('visibilitychange', refreshState);
     };
-  }, []);
+  }, [user]);
 
   if (!user) return null;
 
@@ -68,18 +70,24 @@ export function PushNotificationControl() {
     ? 'Habilita Notificaciones desde el candado o la configuracion del sitio y vuelve a esta pantalla.'
     : '';
   return (
-    <div className="fixed bottom-4 left-4 z-[80] max-w-[calc(100%-2rem)]">
-      <button
-        type="button"
-        onClick={() => void togglePush()}
-        disabled={loading || !interactive}
-        className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-lg transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
-        title={state === 'denied' ? 'Habilitalas desde la configuracion del navegador.' : undefined}
-      >
-        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : state === 'enabled' ? <Bell className="h-4 w-4 text-emerald-600" /> : <BellOff className="h-4 w-4" />}
-        {loading ? 'Comprobando...' : labels[state]}
-      </button>
-      {(error || helpText) && <p className="mt-2 max-w-sm rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 shadow">{error || helpText}</p>}
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="font-semibold text-slate-800">Notificaciones</p>
+          <p className="mt-1 text-sm text-slate-500">Recibi avisos sobre el estado de tus pedidos.</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void togglePush()}
+          disabled={loading || !interactive}
+          className="flex shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+          title={state === 'denied' ? 'Habilitalas desde la configuracion del navegador.' : undefined}
+        >
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : state === 'enabled' ? <Bell className="h-4 w-4 text-emerald-600" /> : <BellOff className="h-4 w-4" />}
+          {loading ? 'Comprobando...' : labels[state]}
+        </button>
+      </div>
+      {(error || helpText) && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{error || helpText}</p>}
     </div>
   );
 }

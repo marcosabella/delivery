@@ -58,6 +58,20 @@ async function ensureRegistration() {
   return navigator.serviceWorker.ready;
 }
 
+async function registerSubscription(subscription: PushSubscription) {
+  const keys = subscription.toJSON().keys;
+  if (!keys?.p256dh || !keys.auth) throw new Error('La suscripcion push no devolvio claves validas.');
+
+  const { error } = await supabase.rpc('register_push_subscription', {
+    subscription_endpoint: subscription.endpoint,
+    subscription_p256dh: keys.p256dh,
+    subscription_auth: keys.auth,
+    subscription_user_agent: navigator.userAgent,
+  });
+
+  if (error) throw error;
+}
+
 export async function getPushNotificationState(): Promise<PushNotificationState> {
   if (!isPushSupported()) return 'unsupported';
   if (!vapidPublicKey) return 'unconfigured';
@@ -98,20 +112,29 @@ export async function enablePushNotifications() {
     userVisibleOnly: true,
     applicationServerKey,
   });
-  const keys = subscription.toJSON().keys;
-  if (!keys?.p256dh || !keys.auth) throw new Error('La suscripcion push no devolvio claves validas.');
 
-  const { error } = await supabase.rpc('register_push_subscription', {
-    subscription_endpoint: subscription.endpoint,
-    subscription_p256dh: keys.p256dh,
-    subscription_auth: keys.auth,
-    subscription_user_agent: navigator.userAgent,
-  });
-
-  if (error) {
+  try {
+    await registerSubscription(subscription);
+  } catch (error) {
     await subscription.unsubscribe();
     throw error;
   }
+}
+
+export async function syncPushSubscription() {
+  if (!isPushSupported() || !vapidPublicKey || Notification.permission !== 'granted') return;
+
+  const registration = await ensureRegistration();
+  const subscription = await registration.pushManager.getSubscription();
+  if (!subscription) return;
+
+  const applicationServerKey = urlBase64ToUint8Array(vapidPublicKey);
+  if (!applicationServerKeyMatches(subscription, applicationServerKey)) {
+    await subscription.unsubscribe();
+    return;
+  }
+
+  await registerSubscription(subscription);
 }
 
 export async function disablePushNotifications() {
