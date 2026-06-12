@@ -3,6 +3,7 @@ import { useState, useCallback } from 'react';
 export interface GeoLocation {
   latitude: number;
   longitude: number;
+  accuracy?: number;
   address?: string;
   locality?: string;
   country?: string;
@@ -16,23 +17,49 @@ export interface GeolocationState {
 
 async function reverseGeocode(latitude: number, longitude: number): Promise<Partial<GeoLocation>> {
   try {
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`
-    );
+    const params = new URLSearchParams({
+      format: 'jsonv2',
+      lat: String(latitude),
+      lon: String(longitude),
+      zoom: '18',
+      addressdetails: '1',
+      'accept-language': 'es',
+    });
+    const response = await fetch(`https://nominatim.openstreetmap.org/reverse?${params.toString()}`);
+    if (!response.ok) return {};
+
     const data = await response.json();
 
     if (data.address) {
       const addr = data.address;
       const streetNumber = addr.house_number ? `${addr.house_number}` : '';
-      const street = addr.road || addr.street || '';
-      const village = addr.village || addr.town || addr.city || '';
+      const street = addr.road
+        || addr.street
+        || addr.pedestrian
+        || addr.residential
+        || addr.footway
+        || addr.path
+        || '';
+      const locality = addr.city
+        || addr.town
+        || addr.village
+        || addr.municipality
+        || addr.city_district
+        || addr.suburb
+        || addr.neighbourhood
+        || '';
+      const namedPlace = data.name
+        || addr.building
+        || addr.amenity
+        || addr.shop
+        || addr.tourism
+        || '';
 
       const addressParts = [];
       if (street) addressParts.push(street);
       if (streetNumber) addressParts.push(streetNumber);
 
-      const address = addressParts.join(' ');
-      const locality = village;
+      const address = addressParts.join(' ') || namedPlace;
 
       return {
         address: address || '',
@@ -74,6 +101,7 @@ export function useGeolocation() {
           const location: GeoLocation = {
             latitude,
             longitude,
+            accuracy: position.coords.accuracy,
             address: geocoded.address,
             locality: geocoded.locality,
             country: geocoded.country,

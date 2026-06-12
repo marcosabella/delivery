@@ -1194,7 +1194,7 @@ function MapView({ latitude, longitude }: { latitude: number; longitude: number 
 }
 
 interface LocationConfirmationModalProps {
-  location: { latitude: number; longitude: number; address?: string; locality?: string; country?: string };
+  location: { latitude: number; longitude: number; accuracy?: number; address?: string; locality?: string; country?: string };
   geoError: string | null;
   onConfirm: (address: string) => void;
   onCancel: () => void;
@@ -1251,6 +1251,7 @@ function LocationConfirmationModal({
 
             <p className="text-xs text-gray-500 text-center mb-4">
               Coordenadas GPS: {location.latitude.toFixed(6)}, {location.longitude.toFixed(6)}
+              {typeof location.accuracy === 'number' && ` (precision aproximada: +/- ${Math.round(location.accuracy)} m)`}
             </p>
 
             <div className="mb-6">

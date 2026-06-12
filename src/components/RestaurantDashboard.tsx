@@ -496,12 +496,21 @@ export function RestaurantDashboard() {
   }
 
   function getOrderLocationQuery(order: RestaurantOrder) {
-    const address = order.delivery_address?.trim();
-    if (address) return address;
+    const latitude = Number(order.latitude);
+    const longitude = Number(order.longitude);
+    const hasValidCoordinates = order.latitude !== null
+      && order.longitude !== null
+      && Number.isFinite(latitude)
+      && Number.isFinite(longitude)
+      && latitude >= -90
+      && latitude <= 90
+      && longitude >= -180
+      && longitude <= 180
+      && (latitude !== 0 || longitude !== 0);
 
-    return order.latitude !== null && order.longitude !== null
-      ? `${order.latitude},${order.longitude}`
-      : '';
+    if (hasValidCoordinates) return `${latitude},${longitude}`;
+
+    return order.delivery_address?.trim() || '';
   }
 
   function getOrderMapUrl(order: RestaurantOrder) {

@@ -116,6 +116,13 @@ export function DriverDashboard() {
       : order.delivery_address;
   }
 
+  function currentLocationLabel() {
+    if (!location) return 'Se necesita la ubicacion para calcular la ruta.';
+
+    const address = [location.address, location.locality].filter(Boolean).join(', ');
+    return address || `${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}`;
+  }
+
   function mapUrl(order: Order) {
     const destination = orderDestination(order);
     if (!location) {
@@ -196,7 +203,7 @@ export function DriverDashboard() {
             <LocateFixed className={`h-5 w-5 shrink-0 ${geoLoading ? 'animate-pulse' : ''}`} />
             <div className="min-w-0">
               <p className="font-semibold">{geoLoading ? 'Localizando posicion de inicio...' : location ? 'Posicion de inicio detectada' : 'Ubicacion no disponible'}</p>
-              <p className="truncate text-xs opacity-80">{geoError || (location ? `${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}` : 'Se necesita la ubicacion para calcular la ruta.')}</p>
+              <p className="truncate text-xs opacity-80">{geoError || currentLocationLabel()}</p>
             </div>
           </div>
           {!geoLoading && !location && <button type="button" onClick={() => void getCurrentLocation()} className="shrink-0 rounded-lg border border-current px-3 py-1.5 text-xs font-semibold hover:bg-white/50">Reintentar</button>}
