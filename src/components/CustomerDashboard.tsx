@@ -3,26 +3,38 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase, Restaurant, MenuItem, Order, Profile } from '../lib/supabase';
 import { useGeolocation } from '../hooks/useGeolocation';
 import { addDefaultLocality } from '../lib/address';
-import { LogOut, Store, ShoppingCart, Clock, MapPin, Search, X, User, AlertCircle, CheckCircle, Home, Pencil, Menu } from 'lucide-react';
+import { LogOut, Store, ShoppingCart, Clock, MapPin, Search, X, User, AlertCircle, CheckCircle, Home, Pencil, Menu, Heart } from 'lucide-react';
 import { MessageModal } from './MessageModal';
 
 type CartItem = MenuItem & { quantity: number };
 type DeliveryMethod = 'delivery' | 'pickup';
+type CustomerView = 'restaurants' | 'cart' | 'orders' | 'favorites';
 const CART_STORAGE_KEY = 'food-delivery-cart';
 const RESTAURANT_STORAGE_KEY = 'food-delivery-restaurant';
 
 function readStoredCart(): CartItem[] {
   try {
-    return JSON.parse(localStorage.getItem(CART_STORAGE_KEY) || '[]') as CartItem[];
+    const value: unknown = JSON.parse(localStorage.getItem(CART_STORAGE_KEY) || '[]');
+    if (Array.isArray(value)) return value as CartItem[];
+
+    localStorage.removeItem(CART_STORAGE_KEY);
+    return [];
   } catch {
+    localStorage.removeItem(CART_STORAGE_KEY);
     return [];
   }
 }
 
 function readStoredRestaurant(): Restaurant | null {
   try {
-    return JSON.parse(localStorage.getItem(RESTAURANT_STORAGE_KEY) || 'null') as Restaurant | null;
+    const value: unknown = JSON.parse(localStorage.getItem(RESTAURANT_STORAGE_KEY) || 'null');
+    if (value === null) return null;
+    if (typeof value === 'object' && typeof (value as Restaurant).id === 'string') return value as Restaurant;
+
+    localStorage.removeItem(RESTAURANT_STORAGE_KEY);
+    return null;
   } catch {
+    localStorage.removeItem(RESTAURANT_STORAGE_KEY);
     return null;
   }
 }
@@ -35,8 +47,11 @@ export function CustomerDashboard() {
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [cart, setCart] = useState<CartItem[]>(readStoredCart);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [favoriteRestaurantIds, setFavoriteRestaurantIds] = useState<Set<string>>(new Set());
+  const [favoriteMenuItemIds, setFavoriteMenuItemIds] = useState<Set<string>>(new Set());
+  const [favoriteMenuItems, setFavoriteMenuItems] = useState<MenuItem[]>([]);
   const [showProfile, setShowProfile] = useState(false);
-  const [activeView, setActiveView] = useState<'restaurants' | 'cart' | 'orders'>('restaurants');
+  const [activeView, setActiveView] = useState<CustomerView>('restaurants');
   const [searchQuery, setSearchQuery] = useState('');
   const [deliveryMethod, setDeliveryMethod] = useState<DeliveryMethod>('delivery');
   const [deliveryAddress, setDeliveryAddress] = useState('');
@@ -50,6 +65,7 @@ export function CustomerDashboard() {
   useEffect(() => {
     loadRestaurants();
     loadOrders();
+    loadFavorites();
   }, []);
 
   useEffect(() => {
@@ -97,6 +113,87 @@ export function CustomerDashboard() {
       .order('created_at', { ascending: false });
 
     if (data) setOrders(data);
+  }
+
+  async function loadFavorites() {
+    if (!profile) return;
+
+    const [restaurantResult, menuItemResult] = await Promise.all([
+      supabase.from('favorite_restaurants').select('restaurant_id').eq('customer_id', profile.id),
+      supabase.from('favorite_menu_items').select('menu_item_id').eq('customer_id', profile.id),
+    ]);
+
+    const restaurantIds = (restaurantResult.data ?? []).map((favorite) => favorite.restaurant_id);
+    const menuItemIds = (menuItemResult.data ?? []).map((favorite) => favorite.menu_item_id);
+
+    setFavoriteRestaurantIds(new Set(restaurantIds));
+    setFavoriteMenuItemIds(new Set(menuItemIds));
+
+    if (menuItemIds.length === 0) {
+      setFavoriteMenuItems([]);
+      return;
+    }
+
+    const { data } = await supabase
+      .from('menu_items')
+      .select('*')
+      .in('id', menuItemIds)
+      .eq('is_available', true)
+      .order('name', { ascending: true });
+
+    setFavoriteMenuItems(data ?? []);
+  }
+
+  async function toggleFavoriteRestaurant(restaurantId: string) {
+    if (!profile) return;
+
+    const isFavorite = favoriteRestaurantIds.has(restaurantId);
+    const query = isFavorite
+      ? supabase.from('favorite_restaurants').delete().eq('customer_id', profile.id).eq('restaurant_id', restaurantId)
+      : supabase.from('favorite_restaurants').insert({ customer_id: profile.id, restaurant_id: restaurantId });
+    const { error } = await query;
+
+    if (error) {
+      setModalMessage({ type: 'error', message: 'No se pudo actualizar el restaurante favorito.' });
+      return;
+    }
+
+    setFavoriteRestaurantIds((current) => {
+      const next = new Set(current);
+      if (isFavorite) next.delete(restaurantId);
+      else next.add(restaurantId);
+      return next;
+    });
+  }
+
+  async function toggleFavoriteMenuItem(item: MenuItem) {
+    if (!profile) return;
+
+    const isFavorite = favoriteMenuItemIds.has(item.id);
+    const query = isFavorite
+      ? supabase.from('favorite_menu_items').delete().eq('customer_id', profile.id).eq('menu_item_id', item.id)
+      : supabase.from('favorite_menu_items').insert({ customer_id: profile.id, menu_item_id: item.id });
+    const { error } = await query;
+
+    if (error) {
+      setModalMessage({ type: 'error', message: 'No se pudo actualizar el plato favorito.' });
+      return;
+    }
+
+    setFavoriteMenuItemIds((current) => {
+      const next = new Set(current);
+      if (isFavorite) next.delete(item.id);
+      else next.add(item.id);
+      return next;
+    });
+    setFavoriteMenuItems((current) =>
+      isFavorite ? current.filter((favorite) => favorite.id !== item.id) : [...current, item]
+    );
+  }
+
+  function openRestaurant(restaurant: Restaurant) {
+    setSelectedRestaurant(restaurant);
+    setActiveView('restaurants');
   }
 
   function addToCart(item: MenuItem) {
@@ -231,6 +328,7 @@ export function CustomerDashboard() {
   const filteredRestaurants = restaurants.filter((r) =>
     r.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+  const favoriteRestaurants = restaurants.filter((restaurant) => favoriteRestaurantIds.has(restaurant.id));
 
   const statusColors: Record<Order['status'], string> = {
     pending: 'bg-yellow-100 text-yellow-800',
@@ -254,6 +352,7 @@ export function CustomerDashboard() {
     { id: 'restaurants' as const, label: 'Restaurantes', icon: Store },
     { id: 'cart' as const, label: 'Carrito', icon: ShoppingCart },
     { id: 'orders' as const, label: 'Pedidos', icon: Clock },
+    { id: 'favorites' as const, label: 'Favoritos', icon: Heart },
   ];
 
   return (
@@ -685,6 +784,94 @@ export function CustomerDashboard() {
               </div>
             )}
           </div>
+        ) : activeView === 'favorites' ? (
+          <div>
+            <div className="mb-8">
+              <h1 className="mb-1 text-xl font-semibold text-gray-800">Mis Favoritos</h1>
+              <p className="text-gray-600">Tus restaurantes y platos preferidos en un solo lugar.</p>
+            </div>
+
+            <section className="mb-8">
+              <h2 className="mb-3 text-lg font-semibold text-gray-800">Restaurantes</h2>
+              {favoriteRestaurants.length === 0 ? (
+                <div className="rounded-lg bg-white p-6 text-center shadow-sm">
+                  <Heart className="mx-auto mb-2 h-8 w-8 text-gray-300" />
+                  <p className="text-gray-600">Todavia no guardaste restaurantes favoritos.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {favoriteRestaurants.map((restaurant) => (
+                    <div key={restaurant.id} className="relative overflow-hidden rounded-lg bg-white p-4 shadow-sm">
+                      <button
+                        type="button"
+                        onClick={() => toggleFavoriteRestaurant(restaurant.id)}
+                        className="absolute right-3 top-3 rounded-full bg-red-50 p-2 text-red-500 transition hover:bg-red-100"
+                        aria-label={`Quitar ${restaurant.name} de favoritos`}
+                      >
+                        <Heart className="h-4 w-4 fill-current" />
+                      </button>
+                      <h3 className="pr-10 font-semibold text-gray-800">{restaurant.name}</h3>
+                      <p className="mb-3 mt-1 line-clamp-2 text-sm text-gray-600">{restaurant.description}</p>
+                      <button
+                        type="button"
+                        onClick={() => openRestaurant(restaurant)}
+                        className="text-sm font-medium text-orange-600 hover:text-orange-700"
+                      >
+                        Ver restaurante
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section>
+              <h2 className="mb-3 text-lg font-semibold text-gray-800">Platos</h2>
+              {favoriteMenuItems.length === 0 ? (
+                <div className="rounded-lg bg-white p-6 text-center shadow-sm">
+                  <Heart className="mx-auto mb-2 h-8 w-8 text-gray-300" />
+                  <p className="text-gray-600">Todavia no guardaste platos favoritos.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {favoriteMenuItems.map((item) => {
+                    const restaurant = restaurants.find((entry) => entry.id === item.restaurant_id);
+                    return (
+                      <div key={item.id} className="rounded-lg bg-white p-4 shadow-sm">
+                        <div className="mb-2 flex items-start justify-between gap-3">
+                          <div>
+                            <h3 className="font-semibold text-gray-800">{item.name}</h3>
+                            <p className="text-xs text-gray-500">{restaurant?.name ?? 'Restaurante'}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => toggleFavoriteMenuItem(item)}
+                            className="rounded-full bg-red-50 p-2 text-red-500 transition hover:bg-red-100"
+                            aria-label={`Quitar ${item.name} de favoritos`}
+                          >
+                            <Heart className="h-4 w-4 fill-current" />
+                          </button>
+                        </div>
+                        <p className="mb-4 line-clamp-2 text-sm text-gray-600">{item.description}</p>
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-orange-500">${item.price}</span>
+                          {restaurant && (
+                            <button
+                              type="button"
+                              onClick={() => openRestaurant(restaurant)}
+                              className="rounded-lg bg-orange-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-orange-600"
+                            >
+                              Ver plato
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </div>
         ) : !selectedRestaurant ? (
           <div>
             <div className="mb-8">
@@ -713,9 +900,22 @@ export function CustomerDashboard() {
                 {filteredRestaurants.map((restaurant) => (
                   <div
                     key={restaurant.id}
-                    onClick={() => setSelectedRestaurant(restaurant)}
-                    className="group cursor-pointer overflow-hidden rounded-lg bg-white shadow-sm transition hover:shadow-md"
+                    onClick={() => openRestaurant(restaurant)}
+                    className="group relative cursor-pointer overflow-hidden rounded-lg bg-white shadow-sm transition hover:shadow-md"
                   >
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleFavoriteRestaurant(restaurant.id);
+                      }}
+                      className={`absolute right-3 top-3 z-10 rounded-full bg-white/90 p-2 shadow-sm transition hover:bg-white ${
+                        favoriteRestaurantIds.has(restaurant.id) ? 'text-red-500' : 'text-slate-500'
+                      }`}
+                      aria-label={`${favoriteRestaurantIds.has(restaurant.id) ? 'Quitar' : 'Agregar'} ${restaurant.name} ${favoriteRestaurantIds.has(restaurant.id) ? 'de' : 'a'} favoritos`}
+                    >
+                      <Heart className={`h-4 w-4 ${favoriteRestaurantIds.has(restaurant.id) ? 'fill-current' : ''}`} />
+                    </button>
                     <div className="flex h-28 items-center justify-center bg-slate-100">
                       <Store className="h-8 w-8 text-slate-400" />
                     </div>
@@ -745,7 +945,7 @@ export function CustomerDashboard() {
 
             <div className="mb-4 rounded-lg bg-white p-4 shadow-sm">
               <div className="flex items-start justify-between">
-                <div>
+                <div className="min-w-0">
                   <h1 className="mb-1 text-xl font-semibold text-gray-800">{selectedRestaurant.name}</h1>
                   <p className="text-gray-600 mb-2">{selectedRestaurant.description}</p>
                   <div className="flex items-center text-sm text-gray-500">
@@ -753,6 +953,18 @@ export function CustomerDashboard() {
                     {selectedRestaurant.address}
                   </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => toggleFavoriteRestaurant(selectedRestaurant.id)}
+                  className={`ml-4 shrink-0 rounded-full border p-2 transition ${
+                    favoriteRestaurantIds.has(selectedRestaurant.id)
+                      ? 'border-red-200 bg-red-50 text-red-500'
+                      : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                  }`}
+                  aria-label={`${favoriteRestaurantIds.has(selectedRestaurant.id) ? 'Quitar' : 'Agregar'} restaurante favorito`}
+                >
+                  <Heart className={`h-5 w-5 ${favoriteRestaurantIds.has(selectedRestaurant.id) ? 'fill-current' : ''}`} />
+                </button>
               </div>
             </div>
 
@@ -768,8 +980,18 @@ export function CustomerDashboard() {
                       <Store className="h-7 w-7 text-slate-400" />
                     </div>
                     <div className="p-4">
-                      <div className="flex justify-between items-start mb-2">
+                      <div className="mb-2 flex items-start justify-between gap-2">
                         <h3 className="font-bold text-gray-800 flex-1">{item.name}</h3>
+                        <button
+                          type="button"
+                          onClick={() => toggleFavoriteMenuItem(item)}
+                          className={`shrink-0 rounded-full p-1.5 transition ${
+                            favoriteMenuItemIds.has(item.id) ? 'bg-red-50 text-red-500' : 'text-slate-400 hover:bg-slate-100'
+                          }`}
+                          aria-label={`${favoriteMenuItemIds.has(item.id) ? 'Quitar' : 'Agregar'} ${item.name} ${favoriteMenuItemIds.has(item.id) ? 'de' : 'a'} favoritos`}
+                        >
+                          <Heart className={`h-4 w-4 ${favoriteMenuItemIds.has(item.id) ? 'fill-current' : ''}`} />
+                        </button>
                         {item.category && (
                           <span className="text-xs bg-orange-100 text-orange-700 px-2 py-1 rounded">
                             {item.category}
@@ -977,6 +1199,7 @@ interface LocationConfirmationModalProps {
   onConfirm: (address: string) => void;
   onCancel: () => void;
   onUseManual: () => void;
+  saveCoordinates?: boolean;
 }
 
 function LocationConfirmationModal({
@@ -985,6 +1208,7 @@ function LocationConfirmationModal({
   onConfirm,
   onCancel,
   onUseManual,
+  saveCoordinates = true,
 }: LocationConfirmationModalProps) {
   const [loading, setLoading] = useState(false);
   const suggestedAddress = [location.address, location.locality].filter(Boolean).join(', ');
@@ -1041,7 +1265,9 @@ function LocationConfirmationModal({
                 placeholder="Corregí tu dirección si es necesario"
               />
               <p className="text-xs text-gray-500 mt-1">
-                Si la dirección no es exacta, corregila manualmente. Las coordenadas GPS se guardarán igual.
+                {saveCoordinates
+                  ? 'Si la dirección no es exacta, corregila manualmente. Las coordenadas GPS se guardarán igual.'
+                  : 'Si la dirección no es exacta, corregila manualmente. En tu perfil se guardará la dirección confirmada.'}
               </p>
             </div>
 
@@ -1075,6 +1301,7 @@ function LocationConfirmationModal({
 }
 
 function ProfileEditForm({ profile, onClose }: { profile: Profile; onClose: () => void }) {
+  const { getCurrentLocation, location, error: geoError, loading: geoLoading } = useGeolocation();
   const [formData, setFormData] = useState({
     full_name: profile.full_name || '',
     phone: profile.phone || '',
@@ -1082,6 +1309,13 @@ function ProfileEditForm({ profile, onClose }: { profile: Profile; onClose: () =
   });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [showLocationConfirm, setShowLocationConfirm] = useState(false);
+
+  async function handleRequestLocation() {
+    setMessage('');
+    const detectedLocation = await getCurrentLocation();
+    if (detectedLocation) setShowLocationConfirm(true);
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -1121,10 +1355,11 @@ function ProfileEditForm({ profile, onClose }: { profile: Profile; onClose: () =
   }
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-xl max-w-md w-full p-6">
-        <h2 className="text-2xl font-bold text-gray-800 mb-6">Editar Perfil</h2>
-        <form onSubmit={handleSubmit} className="space-y-4">
+    <>
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+        <div className="bg-white rounded-xl max-w-md w-full p-6">
+          <h2 className="text-2xl font-bold text-gray-800 mb-6">Editar Perfil</h2>
+          <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Nombre Completo</label>
             <input
@@ -1153,6 +1388,16 @@ function ProfileEditForm({ profile, onClose }: { profile: Profile; onClose: () =
               rows={3}
               placeholder="Tu dirección completa"
             />
+            <button
+              type="button"
+              onClick={() => void handleRequestLocation()}
+              disabled={geoLoading || loading}
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-sm font-semibold text-orange-700 transition hover:bg-orange-100 disabled:opacity-50"
+            >
+              <MapPin className="h-4 w-4" />
+              {geoLoading ? 'Ubicando...' : 'Obtener dirección con mi ubicación'}
+            </button>
+            {geoError && <p className="mt-2 text-sm text-red-600">{geoError}</p>}
           </div>
 
           {message && (
@@ -1177,8 +1422,23 @@ function ProfileEditForm({ profile, onClose }: { profile: Profile; onClose: () =
               {loading ? 'Guardando...' : 'Guardar'}
             </button>
           </div>
-        </form>
+          </form>
+        </div>
       </div>
-    </div>
+
+      {showLocationConfirm && location && (
+        <LocationConfirmationModal
+          location={location}
+          geoError={geoError}
+          onConfirm={(address) => {
+            setFormData((current) => ({ ...current, delivery_address: address }));
+            setShowLocationConfirm(false);
+          }}
+          onCancel={() => setShowLocationConfirm(false)}
+          onUseManual={() => setShowLocationConfirm(false)}
+          saveCoordinates={false}
+        />
+      )}
+    </>
   );
 }

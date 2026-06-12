@@ -2,13 +2,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
+  BadgeCheck,
   ChevronDown,
+  ClipboardList,
   Clock3,
   Filter,
+  Heart,
   KeyRound,
   LogOut,
   MapPin,
   Menu,
+  MessageCircle,
+  Phone,
   Search,
   ShoppingBag,
   Store,
@@ -23,18 +28,33 @@ import { useGeolocation } from '../hooks/useGeolocation';
 import { Auth } from './Auth';
 
 type CartItem = MenuItem & { quantity: number };
-type AccountView = 'cart' | 'orders' | 'profile';
+type AccountView = 'cart' | 'orders' | 'favorites' | 'profile';
 
 const CART_STORAGE_KEY = 'food-delivery-cart';
 const RESTAURANT_STORAGE_KEY = 'food-delivery-restaurant';
 
-function readStoredValue<T>(key: string): T | null {
+function readStoredValue<T>(key: string, isValid: (value: unknown) => value is T): T | null {
   try {
     const value = localStorage.getItem(key);
-    return value ? JSON.parse(value) as T : null;
+    if (!value) return null;
+
+    const parsedValue: unknown = JSON.parse(value);
+    if (isValid(parsedValue)) return parsedValue;
+
+    localStorage.removeItem(key);
+    return null;
   } catch {
+    localStorage.removeItem(key);
     return null;
   }
+}
+
+function isStoredCart(value: unknown): value is CartItem[] {
+  return Array.isArray(value);
+}
+
+function isStoredRestaurant(value: unknown): value is Restaurant {
+  return typeof value === 'object' && value !== null && typeof (value as Restaurant).id === 'string';
 }
 
 export function Landing() {
@@ -45,9 +65,11 @@ export function Landing() {
   const [dishCategories, setDishCategories] = useState<DishCategory[]>([]);
   const [query, setQuery] = useState('');
   const [categoryId, setCategoryId] = useState('all');
-  const [cart, setCart] = useState<CartItem[]>(() => readStoredValue<CartItem[]>(CART_STORAGE_KEY) || []);
-  const [cartRestaurant, setCartRestaurant] = useState<Restaurant | null>(() => readStoredValue<Restaurant>(RESTAURANT_STORAGE_KEY));
+  const [cart, setCart] = useState<CartItem[]>(() => readStoredValue(CART_STORAGE_KEY, isStoredCart) || []);
+  const [cartRestaurant, setCartRestaurant] = useState<Restaurant | null>(() => readStoredValue(RESTAURANT_STORAGE_KEY, isStoredRestaurant));
   const [orders, setOrders] = useState<Order[]>([]);
+  const [favoriteRestaurantIds, setFavoriteRestaurantIds] = useState<Set<string>>(new Set());
+  const [favoriteMenuItemIds, setFavoriteMenuItemIds] = useState<Set<string>>(new Set());
   const [showCart, setShowCart] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [accountView, setAccountView] = useState<AccountView | null>(null);
@@ -107,6 +129,74 @@ export function Landing() {
   useEffect(() => {
     if (profile?.delivery_address) setDeliveryAddress(profile.delivery_address);
   }, [profile?.delivery_address]);
+
+  useEffect(() => {
+    async function loadFavorites() {
+      if (!profile) {
+        setFavoriteRestaurantIds(new Set());
+        setFavoriteMenuItemIds(new Set());
+        return;
+      }
+
+      const [restaurantResult, menuItemResult] = await Promise.all([
+        supabase.from('favorite_restaurants').select('restaurant_id').eq('customer_id', profile.id),
+        supabase.from('favorite_menu_items').select('menu_item_id').eq('customer_id', profile.id),
+      ]);
+
+      setFavoriteRestaurantIds(new Set((restaurantResult.data || []).map((favorite) => favorite.restaurant_id)));
+      setFavoriteMenuItemIds(new Set((menuItemResult.data || []).map((favorite) => favorite.menu_item_id)));
+    }
+
+    void loadFavorites();
+  }, [profile]);
+
+  async function toggleFavoriteRestaurant(restaurantId: string) {
+    if (!profile) {
+      setShowAuth(true);
+      return;
+    }
+
+    const isFavorite = favoriteRestaurantIds.has(restaurantId);
+    const { error } = isFavorite
+      ? await supabase.from('favorite_restaurants').delete().eq('customer_id', profile.id).eq('restaurant_id', restaurantId)
+      : await supabase.from('favorite_restaurants').insert({ customer_id: profile.id, restaurant_id: restaurantId });
+
+    if (error) {
+      setMessage('No se pudo actualizar el restaurante favorito.');
+      return;
+    }
+
+    setFavoriteRestaurantIds((current) => {
+      const next = new Set(current);
+      if (isFavorite) next.delete(restaurantId);
+      else next.add(restaurantId);
+      return next;
+    });
+  }
+
+  async function toggleFavoriteMenuItem(itemId: string) {
+    if (!profile) {
+      setShowAuth(true);
+      return;
+    }
+
+    const isFavorite = favoriteMenuItemIds.has(itemId);
+    const { error } = isFavorite
+      ? await supabase.from('favorite_menu_items').delete().eq('customer_id', profile.id).eq('menu_item_id', itemId)
+      : await supabase.from('favorite_menu_items').insert({ customer_id: profile.id, menu_item_id: itemId });
+
+    if (error) {
+      setMessage('No se pudo actualizar el plato favorito.');
+      return;
+    }
+
+    setFavoriteMenuItemIds((current) => {
+      const next = new Set(current);
+      if (isFavorite) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  }
 
   async function loadOrders() {
     if (!profile) return;
@@ -275,6 +365,8 @@ export function Landing() {
   const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
   const cartTotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const profileLabel = profile?.full_name?.trim() || 'Mi perfil';
+  const favoriteRestaurants = restaurants.filter((restaurant) => favoriteRestaurantIds.has(restaurant.id));
+  const favoriteMenuItems = menuItems.filter((item) => favoriteMenuItemIds.has(item.id));
 
   return (
     <div className="min-h-screen bg-[#fffaf7] text-slate-900">
@@ -288,6 +380,7 @@ export function Landing() {
             <a href="#restaurantes" onClick={() => { setAccountView(null); setSelectedRestaurant(null); }} className="hover:text-orange-600">Restaurantes</a>
             <a href="#platos" onClick={() => { setAccountView(null); setSelectedRestaurant(null); }} className="hover:text-orange-600">Platos</a>
             <a href="#como-funciona" onClick={() => { setAccountView(null); setSelectedRestaurant(null); }} className="hover:text-orange-600">Como funciona</a>
+            <a href="#suma-tu-comercio" onClick={() => { setAccountView(null); setSelectedRestaurant(null); }} className="font-semibold text-orange-600 hover:text-orange-700">Suma tu comercio</a>
           </nav>
           <div className="flex items-center gap-2">
             <button onClick={() => setShowCart(true)} className="relative rounded-xl border border-slate-200 p-2.5 text-slate-700 hover:bg-slate-50" aria-label="Abrir carrito">
@@ -308,6 +401,7 @@ export function Landing() {
               {profileMenu && <div className="absolute right-0 mt-2 w-56 overflow-hidden rounded-xl border border-slate-200 bg-white py-2 text-sm shadow-xl" role="menu">
                 <button onClick={() => openAccountView('cart')} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-slate-700 hover:bg-orange-50 hover:text-orange-600" role="menuitem"><ShoppingBag className="h-4 w-4" /> Mi carrito {cartCount > 0 && <span className="ml-auto font-semibold">{cartCount}</span>}</button>
                 <button onClick={() => { void openOrders(); setProfileMenu(false); }} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-slate-700 hover:bg-orange-50 hover:text-orange-600" role="menuitem"><Clock3 className="h-4 w-4" /> Mis pedidos</button>
+                <button onClick={() => openAccountView('favorites')} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-slate-700 hover:bg-orange-50 hover:text-orange-600" role="menuitem"><Heart className="h-4 w-4" /> Mis favoritos</button>
                 <button onClick={() => openAccountView('profile')} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-slate-700 hover:bg-orange-50 hover:text-orange-600" role="menuitem"><User className="h-4 w-4" /> Datos de mi perfil</button>
                 <div className="my-2 border-t border-slate-100" />
                 <button onClick={() => { setProfileMenu(false); void signOut(); }} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-red-600 hover:bg-red-50" role="menuitem"><LogOut className="h-4 w-4" /> Cerrar sesión</button>
@@ -318,7 +412,7 @@ export function Landing() {
             <button onClick={() => setMobileMenu(!mobileMenu)} className="rounded-xl p-2.5 md:hidden" aria-label="Menu"><Menu className="h-5 w-5" /></button>
           </div>
         </div>
-        {mobileMenu && <div className="border-t bg-white px-4 py-4 md:hidden"><div className="flex flex-col gap-3 text-sm font-medium"><a href="#restaurantes" onClick={() => { setAccountView(null); setSelectedRestaurant(null); setMobileMenu(false); }}>Restaurantes</a><a href="#platos" onClick={() => { setAccountView(null); setSelectedRestaurant(null); setMobileMenu(false); }}>Platos</a>{user ? <details className="group"><summary className="flex cursor-pointer list-none items-center justify-between gap-2 py-1"><span className="truncate">{profileLabel}</span> <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" /></summary><div className="mt-2 flex flex-col gap-3 border-l-2 border-orange-100 pl-4"><button onClick={() => openAccountView('cart')} className="flex items-center gap-2 text-left"><ShoppingBag className="h-4 w-4" /> Mi carrito {cartCount > 0 && <span className="rounded-full bg-orange-500 px-1.5 text-xs text-white">{cartCount}</span>}</button><button onClick={openOrders} className="flex items-center gap-2 text-left"><Clock3 className="h-4 w-4" /> Mis pedidos</button><button onClick={() => openAccountView('profile')} className="flex items-center gap-2 text-left"><User className="h-4 w-4" /> Datos de mi perfil</button><button onClick={() => { setMobileMenu(false); void signOut(); }} className="flex items-center gap-2 text-left text-red-600"><LogOut className="h-4 w-4" /> Cerrar sesión</button></div></details> : <button onClick={() => setShowAuth(true)} className="text-left text-orange-600">Ingresar o registrarme</button>}</div></div>}
+        {mobileMenu && <div className="border-t bg-white px-4 py-4 md:hidden"><div className="flex flex-col gap-3 text-sm font-medium"><a href="#restaurantes" onClick={() => { setAccountView(null); setSelectedRestaurant(null); setMobileMenu(false); }}>Restaurantes</a><a href="#platos" onClick={() => { setAccountView(null); setSelectedRestaurant(null); setMobileMenu(false); }}>Platos</a><a href="#suma-tu-comercio" onClick={() => { setAccountView(null); setSelectedRestaurant(null); setMobileMenu(false); }} className="text-orange-600">Suma tu comercio</a>{user ? <details className="group"><summary className="flex cursor-pointer list-none items-center justify-between gap-2 py-1"><span className="truncate">{profileLabel}</span> <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" /></summary><div className="mt-2 flex flex-col gap-3 border-l-2 border-orange-100 pl-4"><button onClick={() => openAccountView('cart')} className="flex items-center gap-2 text-left"><ShoppingBag className="h-4 w-4" /> Mi carrito {cartCount > 0 && <span className="rounded-full bg-orange-500 px-1.5 text-xs text-white">{cartCount}</span>}</button><button onClick={openOrders} className="flex items-center gap-2 text-left"><Clock3 className="h-4 w-4" /> Mis pedidos</button><button onClick={() => openAccountView('favorites')} className="flex items-center gap-2 text-left"><Heart className="h-4 w-4" /> Mis favoritos</button><button onClick={() => openAccountView('profile')} className="flex items-center gap-2 text-left"><User className="h-4 w-4" /> Datos de mi perfil</button><button onClick={() => { setMobileMenu(false); void signOut(); }} className="flex items-center gap-2 text-left text-red-600"><LogOut className="h-4 w-4" /> Cerrar sesión</button></div></details> : <button onClick={() => setShowAuth(true)} className="text-left text-orange-600">Ingresar o registrarme</button>}</div></div>}
       </header>
 
       <main>
@@ -344,6 +438,17 @@ export function Landing() {
           />
         ) : accountView === 'orders' ? (
           <OrdersView orders={orders} onBack={() => setAccountView(null)} />
+        ) : accountView === 'favorites' ? (
+          <FavoritesView
+            restaurants={favoriteRestaurants}
+            menuItems={favoriteMenuItems}
+            restaurantById={restaurantById}
+            onBack={() => setAccountView(null)}
+            onOpenRestaurant={openRestaurant}
+            onAddToCart={addToCart}
+            onToggleRestaurant={(restaurantId) => void toggleFavoriteRestaurant(restaurantId)}
+            onToggleMenuItem={(itemId) => void toggleFavoriteMenuItem(itemId)}
+          />
         ) : accountView === 'profile' && profile ? (
           <ProfileView profile={profile} onBack={() => setAccountView(null)} onSaved={retryProfile} />
         ) : selectedRestaurant ? (
@@ -352,6 +457,10 @@ export function Landing() {
             items={menuItems.filter((item) => item.restaurant_id === selectedRestaurant.id)}
             onBack={() => setSelectedRestaurant(null)}
             onAddToCart={addToCart}
+            isFavoriteRestaurant={favoriteRestaurantIds.has(selectedRestaurant.id)}
+            favoriteMenuItemIds={favoriteMenuItemIds}
+            onToggleFavoriteRestaurant={() => void toggleFavoriteRestaurant(selectedRestaurant.id)}
+            onToggleFavoriteMenuItem={(itemId) => void toggleFavoriteMenuItem(itemId)}
           />
         ) : (
         <>
@@ -378,7 +487,7 @@ export function Landing() {
         <section id="restaurantes" className="mx-auto max-w-7xl px-4 py-14 sm:px-6">
           <div className="mb-7 flex items-end justify-between"><div><p className="font-semibold text-orange-600">Cerca tuyo</p><h2 className="mt-1 text-3xl font-bold">Restaurantes destacados</h2></div></div>
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            {filteredRestaurants.slice(0, 6).map((restaurant) => <article key={restaurant.id} className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg"><button type="button" onClick={() => openRestaurant(restaurant)} className="block w-full text-left"><div className="h-36 bg-gradient-to-br from-orange-100 to-amber-50">{restaurant.image_url ? <img src={restaurant.image_url} alt={restaurant.name} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center"><Store className="h-12 w-12 text-orange-300" /></div>}</div><div className="p-5"><h3 className="text-lg font-bold">{restaurant.name}</h3><p className="mt-1 line-clamp-2 text-sm text-slate-500">{restaurant.description || 'Conoce todos los platos disponibles.'}</p><div className="mt-4 flex items-center justify-between gap-3 text-xs text-slate-500"><span className="flex min-w-0 items-center gap-1"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{restaurant.address || 'Retiro y delivery'}</span></span><span className="shrink-0 rounded-full bg-green-50 px-2 py-1 font-semibold text-green-700">Ver menu</span></div></div></button></article>)}
+            {filteredRestaurants.slice(0, 6).map((restaurant) => <article key={restaurant.id} className="relative overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg"><button type="button" onClick={() => void toggleFavoriteRestaurant(restaurant.id)} className={`absolute right-3 top-3 z-10 rounded-full bg-white/95 p-2 shadow-md transition ${favoriteRestaurantIds.has(restaurant.id) ? 'text-red-500' : 'text-slate-500 hover:text-red-500'}`} aria-label={`${favoriteRestaurantIds.has(restaurant.id) ? 'Quitar' : 'Agregar'} ${restaurant.name} ${favoriteRestaurantIds.has(restaurant.id) ? 'de' : 'a'} favoritos`}><Heart className={`h-5 w-5 ${favoriteRestaurantIds.has(restaurant.id) ? 'fill-current' : ''}`} /></button><button type="button" onClick={() => openRestaurant(restaurant)} className="block w-full text-left"><div className="h-36 bg-gradient-to-br from-orange-100 to-amber-50">{restaurant.image_url ? <img src={restaurant.image_url} alt={restaurant.name} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center"><Store className="h-12 w-12 text-orange-300" /></div>}</div><div className="p-5"><h3 className="text-lg font-bold">{restaurant.name}</h3><p className="mt-1 line-clamp-2 text-sm text-slate-500">{restaurant.description || 'Conoce todos los platos disponibles.'}</p><div className="mt-4 flex items-center justify-between gap-3 text-xs text-slate-500"><span className="flex min-w-0 items-center gap-1"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{restaurant.address || 'Retiro y delivery'}</span></span><span className="shrink-0 rounded-full bg-green-50 px-2 py-1 font-semibold text-green-700">Ver menu</span></div></div></button></article>)}
           </div>
         </section>
 
@@ -389,11 +498,61 @@ export function Landing() {
               <button onClick={() => setCategoryId('all')} className={`relative h-52 w-64 shrink-0 snap-start overflow-hidden rounded-2xl text-left transition ${categoryId === 'all' ? 'ring-4 ring-orange-400' : 'hover:-translate-y-1 hover:shadow-lg'}`}><div className="absolute inset-0 bg-gradient-to-br from-orange-400 to-amber-600" /><div className="absolute inset-0 bg-black/15" /><div className="absolute inset-x-0 bottom-0 p-5 text-white"><h3 className="text-xl font-bold">Todas las categorias</h3><p className="mt-1 text-sm text-white/85">Mira todos los platos disponibles.</p></div></button>
               {dishCategories.map((category) => <button key={category.id} onClick={() => setCategoryId(category.id)} className={`group relative h-52 w-64 shrink-0 snap-start overflow-hidden rounded-2xl bg-slate-800 text-left transition ${categoryId === category.id ? 'ring-4 ring-orange-400' : 'hover:-translate-y-1 hover:shadow-lg'}`}>{category.image_url ? <img src={category.image_url} alt={category.name} className="absolute inset-0 h-full w-full object-cover transition duration-300 group-hover:scale-105" /> : <div className="absolute inset-0 bg-gradient-to-br from-slate-700 to-slate-900" />}<div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent" /><div className="absolute inset-x-0 bottom-0 p-5 text-white"><h3 className="text-xl font-bold">{category.name}</h3>{category.description && <p className="mt-1 line-clamp-2 text-sm text-white/85">{category.description}</p>}</div></button>)}
             </div>
-            {loading ? <div className="py-16 text-center text-slate-500">Cargando catalogo...</div> : filteredItems.length === 0 ? <div className="rounded-2xl bg-slate-50 py-16 text-center"><Search className="mx-auto h-10 w-10 text-slate-300" /><p className="mt-3 text-slate-500">No encontramos resultados para tu busqueda.</p></div> : <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">{filteredItems.slice(0, 12).map((item) => { const restaurant = restaurantById.get(item.restaurant_id); return <article key={item.id} className="group overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm hover:shadow-lg"><div className="h-40 overflow-hidden bg-slate-100">{item.image_url ? <img src={item.image_url} alt={item.name} className="h-full w-full object-cover transition duration-300 group-hover:scale-105" /> : <div className="flex h-full items-center justify-center"><UtensilsCrossed className="h-10 w-10 text-slate-300" /></div>}</div><div className="p-4"><p className="text-xs font-semibold uppercase tracking-wide text-orange-600">{restaurant?.name}</p><h3 className="mt-1 font-bold">{item.name}</h3><p className="mt-1 line-clamp-2 min-h-10 text-sm text-slate-500">{item.description || item.category}</p><div className="mt-4 flex items-center justify-between"><span className="text-xl font-black">${Number(item.price).toLocaleString('es-AR')}</span><button onClick={() => addToCart(item)} className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600">Agregar</button></div></div></article>; })}</div>}
+            {loading ? <div className="py-16 text-center text-slate-500">Cargando catalogo...</div> : filteredItems.length === 0 ? <div className="rounded-2xl bg-slate-50 py-16 text-center"><Search className="mx-auto h-10 w-10 text-slate-300" /><p className="mt-3 text-slate-500">No encontramos resultados para tu busqueda.</p></div> : <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">{filteredItems.slice(0, 12).map((item) => { const restaurant = restaurantById.get(item.restaurant_id); return <article key={item.id} className="group relative overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm hover:shadow-lg"><button type="button" onClick={() => void toggleFavoriteMenuItem(item.id)} className={`absolute right-3 top-3 z-10 rounded-full bg-white/95 p-2 shadow-md transition ${favoriteMenuItemIds.has(item.id) ? 'text-red-500' : 'text-slate-500 hover:text-red-500'}`} aria-label={`${favoriteMenuItemIds.has(item.id) ? 'Quitar' : 'Agregar'} ${item.name} ${favoriteMenuItemIds.has(item.id) ? 'de' : 'a'} favoritos`}><Heart className={`h-5 w-5 ${favoriteMenuItemIds.has(item.id) ? 'fill-current' : ''}`} /></button><div className="h-40 overflow-hidden bg-slate-100">{item.image_url ? <img src={item.image_url} alt={item.name} className="h-full w-full object-cover transition duration-300 group-hover:scale-105" /> : <div className="flex h-full items-center justify-center"><UtensilsCrossed className="h-10 w-10 text-slate-300" /></div>}</div><div className="p-4"><p className="text-xs font-semibold uppercase tracking-wide text-orange-600">{restaurant?.name}</p><h3 className="mt-1 font-bold">{item.name}</h3><p className="mt-1 line-clamp-2 min-h-10 text-sm text-slate-500">{item.description || item.category}</p><div className="mt-4 flex items-center justify-between"><span className="text-xl font-black">${Number(item.price).toLocaleString('es-AR')}</span><button onClick={() => addToCart(item)} className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600">Agregar</button></div></div></article>; })}</div>}
           </div>
         </section>
 
         <section id="como-funciona" className="mx-auto max-w-7xl px-4 py-16 sm:px-6"><div className="grid gap-5 md:grid-cols-3">{[[Search, 'Busca y elegi', 'Filtra por restaurante, plato o categoria.'], [ShoppingBag, 'Arma tu pedido', 'Agrega productos al carrito y revisa el total.'], [Clock3, 'Recibi o retira', 'Inicia sesion, confirma los datos y hace el pedido.']].map(([Icon, title, description]) => { const StepIcon = Icon as typeof Search; return <div key={title as string} className="rounded-2xl bg-white p-6 shadow-sm"><StepIcon className="h-8 w-8 text-orange-500" /><h3 className="mt-4 text-lg font-bold">{title as string}</h3><p className="mt-2 text-slate-500">{description as string}</p></div>; })}</div></section>
+
+        <section id="suma-tu-comercio" className="scroll-mt-20 bg-slate-900 py-16 text-white sm:py-20">
+          <div className="mx-auto grid max-w-7xl gap-10 px-4 sm:px-6 lg:grid-cols-[1.1fr_.9fr] lg:items-center">
+            <div>
+              <span className="inline-flex items-center gap-2 rounded-full bg-orange-500/15 px-3 py-1 text-sm font-semibold text-orange-300">
+                <Store className="h-4 w-4" /> Comercios y restaurantes
+              </span>
+              <h2 className="mt-5 max-w-2xl text-3xl font-black tracking-tight sm:text-4xl">Lleva tu negocio a mas clientes y gestiona tus pedidos desde un solo lugar.</h2>
+              <p className="mt-5 max-w-2xl text-lg leading-relaxed text-slate-300">
+                Al adherirte, tu comercio pasa a formar parte del catalogo que los clientes usan para descubrir restaurantes, consultar menus y pedir online. Vos recibis cada pedido y administras la operacion desde tu propio panel.
+              </p>
+
+              <div className="mt-8 grid gap-4 sm:grid-cols-2">
+                {[
+                  [UtensilsCrossed, 'Tu menu siempre visible', 'Publica platos con precios, categorias, fotos y disponibilidad.'],
+                  [ClipboardList, 'Pedidos organizados', 'Recibi pedidos online y segui su estado desde la confirmacion hasta la entrega.'],
+                  [ShoppingBag, 'Delivery o retiro', 'Ofrece entrega a domicilio o retiro en el local segun tu forma de trabajo.'],
+                  [BadgeCheck, 'Gestion integral', 'Administra clientes, repartidores y hojas de ruta desde el panel del restaurante.'],
+                ].map(([Icon, title, description]) => {
+                  const BenefitIcon = Icon as typeof Store;
+                  return <div key={title as string} className="rounded-2xl border border-white/10 bg-white/5 p-5"><BenefitIcon className="h-7 w-7 text-orange-400" /><h3 className="mt-3 font-bold">{title as string}</h3><p className="mt-2 text-sm leading-relaxed text-slate-400">{description as string}</p></div>;
+                })}
+              </div>
+            </div>
+
+            <aside className="rounded-3xl bg-white p-6 text-slate-900 shadow-2xl sm:p-8">
+              <p className="font-semibold text-orange-600">Quiero adherir mi comercio</p>
+              <h3 className="mt-2 text-2xl font-black">Solicita informacion para comenzar</h3>
+              <p className="mt-3 leading-relaxed text-slate-600">Contactanos para conocer los requisitos de alta, resolver tus consultas y coordinar la incorporacion de tu restaurante o comercio a la plataforma.</p>
+
+              <div className="mt-6 rounded-2xl bg-orange-50 p-4">
+                <p className="text-sm font-semibold text-slate-500">Atencion comercial</p>
+                <a href="tel:+543583430176" className="mt-2 flex items-center gap-3 text-lg font-bold text-slate-900 hover:text-orange-600">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-orange-500 shadow-sm"><Phone className="h-5 w-5" /></span>
+                  3583 - 430176
+                </a>
+              </div>
+
+              <div className="mt-6 grid gap-3 sm:grid-cols-2">
+                <a href="https://wa.me/543583430176?text=Hola%2C%20quiero%20recibir%20informacion%20para%20adherir%20mi%20comercio%20a%20Food%20Delivery." target="_blank" rel="noreferrer" className="flex items-center justify-center gap-2 rounded-xl bg-green-500 px-4 py-3 font-bold text-white transition hover:bg-green-600">
+                  <MessageCircle className="h-5 w-5" /> Escribir por WhatsApp
+                </a>
+                <a href="tel:+543583430176" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 px-4 py-3 font-bold text-slate-700 transition hover:border-orange-300 hover:bg-orange-50 hover:text-orange-700">
+                  <Phone className="h-5 w-5" /> Llamar ahora
+                </a>
+              </div>
+              <p className="mt-4 text-center text-xs text-slate-400">Te orientamos personalmente durante el proceso de registro.</p>
+            </aside>
+          </div>
+        </section>
         </>
         )}
       </main>
@@ -411,9 +570,13 @@ interface RestaurantViewProps {
   items: MenuItem[];
   onBack: () => void;
   onAddToCart: (item: MenuItem) => void;
+  isFavoriteRestaurant: boolean;
+  favoriteMenuItemIds: Set<string>;
+  onToggleFavoriteRestaurant: () => void;
+  onToggleFavoriteMenuItem: (itemId: string) => void;
 }
 
-function RestaurantView({ restaurant, items, onBack, onAddToCart }: RestaurantViewProps) {
+function RestaurantView({ restaurant, items, onBack, onAddToCart, isFavoriteRestaurant, favoriteMenuItemIds, onToggleFavoriteRestaurant, onToggleFavoriteMenuItem }: RestaurantViewProps) {
   return (
     <section className="mx-auto min-h-[70vh] max-w-7xl px-4 py-10 sm:px-6">
       <button onClick={onBack} className="mb-6 flex items-center gap-2 text-sm font-semibold text-slate-600 hover:text-orange-600">
@@ -431,7 +594,7 @@ function RestaurantView({ restaurant, items, onBack, onAddToCart }: RestaurantVi
           </div>
           <div className="flex flex-col justify-center p-7 sm:p-10">
             <p className="text-sm font-semibold uppercase tracking-wide text-orange-300">Menu completo</p>
-            <h1 className="mt-2 text-3xl font-black sm:text-4xl">{restaurant.name}</h1>
+            <div className="mt-2 flex items-center justify-between gap-4"><h1 className="text-3xl font-black sm:text-4xl">{restaurant.name}</h1><button type="button" onClick={onToggleFavoriteRestaurant} className={`shrink-0 rounded-full border p-3 transition ${isFavoriteRestaurant ? 'border-red-400 bg-red-500 text-white' : 'border-white/30 text-white hover:border-red-400 hover:text-red-300'}`} aria-label={`${isFavoriteRestaurant ? 'Quitar' : 'Agregar'} restaurante favorito`}><Heart className={`h-5 w-5 ${isFavoriteRestaurant ? 'fill-current' : ''}`} /></button></div>
             <p className="mt-4 max-w-2xl text-slate-300">{restaurant.description || 'Conoce todos los platos disponibles.'}</p>
             <div className="mt-5 flex items-center gap-2 text-sm text-slate-300">
               <MapPin className="h-4 w-4 shrink-0 text-orange-400" /> {restaurant.address || 'Retiro y delivery'}
@@ -453,7 +616,8 @@ function RestaurantView({ restaurant, items, onBack, onAddToCart }: RestaurantVi
       ) : (
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {items.map((item) => (
-            <article key={item.id} className="group overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm hover:shadow-lg">
+            <article key={item.id} className="group relative overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm hover:shadow-lg">
+              <button type="button" onClick={() => onToggleFavoriteMenuItem(item.id)} className={`absolute right-3 top-3 z-10 rounded-full bg-white/95 p-2 shadow-md transition ${favoriteMenuItemIds.has(item.id) ? 'text-red-500' : 'text-slate-500 hover:text-red-500'}`} aria-label={`${favoriteMenuItemIds.has(item.id) ? 'Quitar' : 'Agregar'} ${item.name} ${favoriteMenuItemIds.has(item.id) ? 'de' : 'a'} favoritos`}><Heart className={`h-5 w-5 ${favoriteMenuItemIds.has(item.id) ? 'fill-current' : ''}`} /></button>
               <div className="h-40 overflow-hidden bg-slate-100">
                 {item.image_url ? (
                   <img src={item.image_url} alt={item.name} className="h-full w-full object-cover transition duration-300 group-hover:scale-105" />
@@ -660,6 +824,8 @@ function OrdersView({ orders, onBack }: { orders: Order[]; onBack: () => void })
 }
 
 function ProfileView({ profile, onSaved, onBack }: { profile: Profile; onSaved: () => Promise<void>; onBack: () => void }) {
+  const { getCurrentLocation, error: geoError, loading: geoLoading } = useGeolocation();
+  const [activeTab, setActiveTab] = useState<'profile' | 'address' | 'password'>('profile');
   const [fullName, setFullName] = useState(profile.full_name || '');
   const [phone, setPhone] = useState(profile.phone || '');
   const [address, setAddress] = useState(profile.delivery_address || '');
@@ -671,6 +837,22 @@ function ProfileView({ profile, onSaved, onBack }: { profile: Profile; onSaved: 
   const [changingPassword, setChangingPassword] = useState(false);
   const [passwordError, setPasswordError] = useState('');
   const [passwordChanged, setPasswordChanged] = useState(false);
+
+  async function handleGeolocateAddress() {
+    setError('');
+    setSaved(false);
+
+    const location = await getCurrentLocation();
+    if (!location) return;
+
+    const detectedAddress = [location.address, location.locality].filter(Boolean).join(', ');
+    if (!detectedAddress) {
+      setError('Se obtuvo tu ubicacion, pero no se pudo determinar la direccion.');
+      return;
+    }
+
+    setAddress(detectedAddress);
+  }
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -729,37 +911,122 @@ function ProfileView({ profile, onSaved, onBack }: { profile: Profile; onSaved: 
   }
 
   return (
-    <section className="mx-auto min-h-[70vh] max-w-2xl space-y-6 px-4 py-10 sm:px-6">
-      <form onSubmit={handleSubmit} className="rounded-2xl bg-white p-6 shadow-sm">
-        <div className="mb-5 flex items-center justify-between">
-          <h2 className="text-xl font-bold">Mi perfil</h2>
+    <section className="mx-auto min-h-[70vh] max-w-3xl px-4 py-10 sm:px-6">
+      <div className="overflow-hidden rounded-2xl bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-5 sm:px-6">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">Datos de mi cuenta</h1>
+            <p className="mt-1 text-sm text-slate-500">Administra tu información personal y seguridad.</p>
+          </div>
           <button type="button" onClick={onBack} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50">Volver</button>
         </div>
-        <div className="space-y-4">
-          <label className="block text-sm font-medium text-slate-700">Nombre completo<input required value={fullName} onChange={(event) => setFullName(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 p-3 outline-none focus:border-orange-500" /></label>
-          <label className="block text-sm font-medium text-slate-700">Telefono<input value={phone} onChange={(event) => setPhone(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 p-3 outline-none focus:border-orange-500" /></label>
-          <label className="block text-sm font-medium text-slate-700">Direccion de entrega<textarea value={address} onChange={(event) => setAddress(event.target.value)} rows={3} className="mt-1 w-full rounded-lg border border-slate-300 p-3 outline-none focus:border-orange-500" /></label>
-          {error && <p className="text-sm text-red-600">{error}</p>}
-          {saved && <p className="text-sm text-green-600">Perfil actualizado correctamente.</p>}
-          <button disabled={saving} className="w-full rounded-xl bg-orange-500 py-3 font-bold text-white hover:bg-orange-600 disabled:opacity-50">{saving ? 'Guardando...' : 'Guardar cambios'}</button>
-        </div>
-      </form>
-      <form onSubmit={handlePasswordChange} className="rounded-2xl bg-white p-6 shadow-sm">
-        <div className="mb-5 flex items-center gap-3">
-          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-50 text-orange-600"><KeyRound className="h-5 w-5" /></span>
-          <div>
-            <h2 className="text-xl font-bold">Cambiar contrasena</h2>
-            <p className="text-sm text-slate-500">Usa al menos 6 caracteres.</p>
+
+        <div className="overflow-x-auto border-b border-slate-200 px-3 sm:px-6">
+          <div className="flex min-w-max gap-1" role="tablist" aria-label="Datos de mi cuenta">
+            {[
+              { id: 'profile' as const, label: 'Mi perfil', icon: User },
+              { id: 'address' as const, label: 'Dirección', icon: MapPin },
+              { id: 'password' as const, label: 'Contraseña', icon: KeyRound },
+            ].map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === id}
+                onClick={() => setActiveTab(id)}
+                className={`flex items-center gap-2 border-b-2 px-4 py-4 text-sm font-semibold transition-colors ${activeTab === id ? 'border-orange-500 text-orange-600' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+              >
+                <Icon className="h-4 w-4" />
+                {label}
+              </button>
+            ))}
           </div>
         </div>
-        <div className="space-y-4">
-          <label className="block text-sm font-medium text-slate-700">Nueva contrasena<input type="password" autoComplete="new-password" required minLength={6} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 p-3 outline-none focus:border-orange-500" /></label>
-          <label className="block text-sm font-medium text-slate-700">Confirmar nueva contrasena<input type="password" autoComplete="new-password" required minLength={6} value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 p-3 outline-none focus:border-orange-500" /></label>
-          {passwordError && <p className="text-sm text-red-600">{passwordError}</p>}
-          {passwordChanged && <p className="text-sm text-green-600">Contrasena actualizada correctamente.</p>}
-          <button disabled={changingPassword} className="w-full rounded-xl bg-slate-900 py-3 font-bold text-white hover:bg-slate-800 disabled:opacity-50">{changingPassword ? 'Actualizando...' : 'Cambiar contrasena'}</button>
+
+        {activeTab !== 'password' ? (
+          <form onSubmit={handleSubmit} className="p-5 sm:p-6" role="tabpanel">
+            {activeTab === 'profile' ? (
+              <div className="space-y-4">
+                <div className="mb-6">
+                  <h2 className="text-xl font-bold text-slate-900">Mi perfil</h2>
+                  <p className="mt-1 text-sm text-slate-500">Actualiza tus datos de contacto.</p>
+                </div>
+                <label className="block text-sm font-medium text-slate-700">Nombre completo<input required value={fullName} onChange={(event) => setFullName(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 p-3 outline-none focus:border-orange-500" /></label>
+                <label className="block text-sm font-medium text-slate-700">Teléfono<input value={phone} onChange={(event) => setPhone(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 p-3 outline-none focus:border-orange-500" /></label>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="mb-6">
+                  <h2 className="text-xl font-bold text-slate-900">Dirección de entrega</h2>
+                  <p className="mt-1 text-sm text-slate-500">Esta dirección se usará como opción predeterminada en tus pedidos.</p>
+                </div>
+                <label className="block text-sm font-medium text-slate-700">
+                  Dirección
+                  <textarea value={address} onChange={(event) => setAddress(event.target.value)} rows={4} className="mt-1 w-full rounded-lg border border-slate-300 p-3 outline-none focus:border-orange-500" />
+                </label>
+                <button type="button" onClick={() => void handleGeolocateAddress()} disabled={geoLoading || saving} className="flex w-full items-center justify-center gap-2 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2.5 text-sm font-semibold text-orange-700 hover:bg-orange-100 disabled:opacity-50">
+                  <MapPin className="h-4 w-4" />
+                  {geoLoading ? 'Ubicando...' : 'Obtener dirección con mi ubicación'}
+                </button>
+                {geoError && <p className="text-sm text-red-600">{geoError}</p>}
+              </div>
+            )}
+            <div className="mt-6 space-y-4 border-t border-slate-100 pt-5">
+              {error && <p className="text-sm text-red-600">{error}</p>}
+              {saved && <p className="text-sm text-green-600">Perfil actualizado correctamente.</p>}
+              <button disabled={saving} className="w-full rounded-xl bg-orange-500 py-3 font-bold text-white hover:bg-orange-600 disabled:opacity-50">{saving ? 'Guardando...' : 'Guardar cambios'}</button>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={handlePasswordChange} className="p-5 sm:p-6" role="tabpanel">
+            <div className="mb-6">
+              <h2 className="text-xl font-bold text-slate-900">Cambiar contraseña</h2>
+              <p className="mt-1 text-sm text-slate-500">Usa al menos 6 caracteres.</p>
+            </div>
+            <div className="space-y-4">
+              <label className="block text-sm font-medium text-slate-700">Nueva contraseña<input type="password" autoComplete="new-password" required minLength={6} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 p-3 outline-none focus:border-orange-500" /></label>
+              <label className="block text-sm font-medium text-slate-700">Confirmar nueva contraseña<input type="password" autoComplete="new-password" required minLength={6} value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 p-3 outline-none focus:border-orange-500" /></label>
+              {passwordError && <p className="text-sm text-red-600">{passwordError}</p>}
+              {passwordChanged && <p className="text-sm text-green-600">Contraseña actualizada correctamente.</p>}
+              <button disabled={changingPassword} className="w-full rounded-xl bg-slate-900 py-3 font-bold text-white hover:bg-slate-800 disabled:opacity-50">{changingPassword ? 'Actualizando...' : 'Cambiar contraseña'}</button>
+            </div>
+          </form>
+        )}
+      </div>
+    </section>
+  );
+}
+
+interface FavoritesViewProps {
+  restaurants: Restaurant[];
+  menuItems: MenuItem[];
+  restaurantById: Map<string, Restaurant>;
+  onBack: () => void;
+  onOpenRestaurant: (restaurant: Restaurant) => void;
+  onAddToCart: (item: MenuItem) => void;
+  onToggleRestaurant: (restaurantId: string) => void;
+  onToggleMenuItem: (itemId: string) => void;
+}
+
+function FavoritesView({ restaurants, menuItems, restaurantById, onBack, onOpenRestaurant, onAddToCart, onToggleRestaurant, onToggleMenuItem }: FavoritesViewProps) {
+  return (
+    <section className="mx-auto min-h-[70vh] max-w-7xl px-4 py-10 sm:px-6">
+      <div className="mb-8 flex items-center justify-between gap-4">
+        <div><p className="font-semibold text-orange-600">Mi perfil</p><h1 className="text-3xl font-bold">Mis favoritos</h1><p className="mt-1 text-slate-500">Tus restaurantes y platos guardados.</p></div>
+        <button onClick={onBack} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-white">Volver</button>
+      </div>
+
+      <div className="space-y-10">
+        <div>
+          <h2 className="mb-4 text-xl font-bold">Restaurantes</h2>
+          {restaurants.length === 0 ? <div className="rounded-2xl bg-white py-12 text-center text-slate-400 shadow-sm"><Heart className="mx-auto h-10 w-10" /><p className="mt-3">Todavia no guardaste restaurantes favoritos.</p></div> : <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">{restaurants.map((restaurant) => <article key={restaurant.id} className="relative overflow-hidden rounded-2xl bg-white shadow-sm"><button type="button" onClick={() => onToggleRestaurant(restaurant.id)} className="absolute right-3 top-3 z-10 rounded-full bg-white p-2 text-red-500 shadow-md" aria-label={`Quitar ${restaurant.name} de favoritos`}><Heart className="h-5 w-5 fill-current" /></button><button type="button" onClick={() => onOpenRestaurant(restaurant)} className="block w-full text-left"><div className="h-36 bg-orange-50">{restaurant.image_url ? <img src={restaurant.image_url} alt={restaurant.name} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center"><Store className="h-12 w-12 text-orange-300" /></div>}</div><div className="p-4"><h3 className="font-bold">{restaurant.name}</h3><p className="mt-1 line-clamp-2 text-sm text-slate-500">{restaurant.description || 'Conoce todos los platos disponibles.'}</p></div></button></article>)}</div>}
         </div>
-      </form>
+
+        <div>
+          <h2 className="mb-4 text-xl font-bold">Platos</h2>
+          {menuItems.length === 0 ? <div className="rounded-2xl bg-white py-12 text-center text-slate-400 shadow-sm"><Heart className="mx-auto h-10 w-10" /><p className="mt-3">Todavia no guardaste platos favoritos.</p></div> : <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">{menuItems.map((item) => <article key={item.id} className="relative overflow-hidden rounded-2xl bg-white shadow-sm"><button type="button" onClick={() => onToggleMenuItem(item.id)} className="absolute right-3 top-3 z-10 rounded-full bg-white p-2 text-red-500 shadow-md" aria-label={`Quitar ${item.name} de favoritos`}><Heart className="h-5 w-5 fill-current" /></button><div className="h-36 bg-slate-100">{item.image_url ? <img src={item.image_url} alt={item.name} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center"><UtensilsCrossed className="h-10 w-10 text-slate-300" /></div>}</div><div className="p-4"><p className="text-xs font-semibold uppercase text-orange-600">{restaurantById.get(item.restaurant_id)?.name}</p><h3 className="mt-1 font-bold">{item.name}</h3><div className="mt-4 flex items-center justify-between gap-3"><span className="text-lg font-black">${Number(item.price).toLocaleString('es-AR')}</span><button onClick={() => onAddToCart(item)} className="rounded-xl bg-orange-500 px-3 py-2 text-sm font-bold text-white hover:bg-orange-600">Agregar</button></div></div></article>)}</div>}
+        </div>
+      </div>
     </section>
   );
 }

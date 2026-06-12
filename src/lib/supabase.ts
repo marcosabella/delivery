@@ -3,11 +3,18 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase environment variables');
-}
+export const missingSupabaseEnv = [
+  !supabaseUrl && 'VITE_SUPABASE_URL',
+  !supabaseAnonKey && 'VITE_SUPABASE_ANON_KEY',
+].filter((name): name is string => Boolean(name));
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const isSupabaseConfigured = missingSupabaseEnv.length === 0;
+
+// Keep module imports renderable so configuration errors can be shown in the UI.
+export const supabase = createClient(
+  supabaseUrl || 'https://invalid.supabase.co',
+  supabaseAnonKey || 'missing-anon-key',
+);
 
 export type Profile = {
   id: string;
@@ -45,6 +52,18 @@ export type MenuItem = {
   is_available: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type FavoriteRestaurant = {
+  customer_id: string;
+  restaurant_id: string;
+  created_at: string;
+};
+
+export type FavoriteMenuItem = {
+  customer_id: string;
+  menu_item_id: string;
+  created_at: string;
 };
 
 export type DishCategory = {
