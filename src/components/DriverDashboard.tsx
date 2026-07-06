@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Bike, CheckCircle2, ClipboardList, Clock, LocateFixed, LogOut, MapPin, Navigation, PackageCheck, Play, Store } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useGeolocation } from '../hooks/useGeolocation';
+import { notifyCustomerOrderStatus } from '../lib/orderStatusNotifications';
 import { Order, supabase } from '../lib/supabase';
 
 type RouteOrder = {
@@ -83,6 +84,9 @@ export function DriverDashboard() {
 
   async function completeDelivery(routeOrderId: string) {
     const notes = window.prompt('Nota de entrega (opcional):') ?? '';
+    const routeOrder = routes
+      .flatMap((route) => route.delivery_route_orders)
+      .find((currentRouteOrder) => currentRouteOrder.id === routeOrderId);
     setBusyId(routeOrderId);
     setError('');
     const { error: completeError } = await supabase.rpc('complete_route_order', {
@@ -90,6 +94,7 @@ export function DriverDashboard() {
       target_notes: notes,
     });
     if (completeError) setError(completeError.message);
+    else if (routeOrder) void notifyCustomerOrderStatus(routeOrder.order.id);
     await loadRoutes();
     setBusyId(null);
   }

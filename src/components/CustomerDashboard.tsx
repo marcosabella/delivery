@@ -3,7 +3,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase, Restaurant, MenuItem, Order, Profile } from '../lib/supabase';
 import { useGeolocation } from '../hooks/useGeolocation';
 import { addDefaultLocality } from '../lib/address';
-import { LogOut, Store, ShoppingCart, Clock, MapPin, Search, X, User, AlertCircle, CheckCircle, Home, Pencil, Menu } from 'lucide-react';
+import { customerOrderStatusLabels, getCustomerOrderStatusMessage, getOrderNotificationPermissionState, OrderNotificationPermissionState, requestOrderNotificationPermission, shouldNotifyCustomerOrderStatus, showOrderBrowserNotification } from '../lib/orderStatusNotifications';
+import { LogOut, Store, ShoppingCart, Clock, MapPin, Search, X, User, AlertCircle, CheckCircle, Home, Pencil, Menu, BellRing } from 'lucide-react';
 import { MessageModal } from './MessageModal';
 
 type CartItem = MenuItem & { quantity: number };
@@ -45,12 +46,32 @@ export function CustomerDashboard() {
   const [addressSource, setAddressSource] = useState<'profile' | 'manual' | 'geolocation'>('profile');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [modalMessage, setModalMessage] = useState<{ message: string; type: 'error' | 'info' | 'success' } | null>(null);
+  const [statusNotification, setStatusNotification] = useState<{ orderId: string; message: string } | null>(null);
   const didPrefillAddress = useRef(false);
+  const knownOrderStatusesRef = useRef<Map<string, Order['status']>>(new Map());
+  const hasLoadedOrdersRef = useRef(false);
 
   useEffect(() => {
     loadRestaurants();
     loadOrders();
   }, []);
+
+  useEffect(() => {
+    if (!profile?.id) return;
+
+    const channel = supabase
+      .channel(`customer-orders-${profile.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders', filter: `customer_id=eq.${profile.id}` }, () => void loadOrders())
+      .subscribe();
+
+    return () => { void supabase.removeChannel(channel); };
+  }, [profile?.id]);
+
+  useEffect(() => {
+    if (!statusNotification) return;
+    const timeoutId = window.setTimeout(() => setStatusNotification(null), 7000);
+    return () => window.clearTimeout(timeoutId);
+  }, [statusNotification]);
 
   useEffect(() => {
     if (!didPrefillAddress.current && profile?.delivery_address) {
@@ -96,7 +117,25 @@ export function CustomerDashboard() {
       .eq('customer_id', profile!.id)
       .order('created_at', { ascending: false });
 
-    if (data) setOrders(data);
+    if (!data) return;
+
+    const previousStatuses = knownOrderStatusesRef.current;
+    const isRefreshAfterInitialLoad = hasLoadedOrdersRef.current;
+    const changedOrder = (data as Order[]).find((order) => {
+      const previousStatus = previousStatuses.get(order.id);
+      return previousStatus && previousStatus !== order.status && shouldNotifyCustomerOrderStatus(order.status);
+    });
+
+    knownOrderStatusesRef.current = new Map((data as Order[]).map((order) => [order.id, order.status]));
+    hasLoadedOrdersRef.current = true;
+
+    if (isRefreshAfterInitialLoad && changedOrder) {
+      const message = getCustomerOrderStatusMessage(changedOrder);
+      setStatusNotification({ orderId: changedOrder.id, message });
+      showOrderBrowserNotification(changedOrder);
+    }
+
+    setOrders(data);
   }
 
   function addToCart(item: MenuItem) {
@@ -219,6 +258,7 @@ export function CustomerDashboard() {
     localStorage.removeItem(CART_STORAGE_KEY);
     localStorage.removeItem(RESTAURANT_STORAGE_KEY);
     setActiveView('orders');
+    void requestOrderNotificationPermission();
     setDeliveryMethod('delivery');
     setDeliveryAddress(profile?.delivery_address || '');
     setAddressSource(profile?.delivery_address ? 'profile' : 'manual');
@@ -238,16 +278,12 @@ export function CustomerDashboard() {
     preparing: 'bg-orange-100 text-orange-800',
     delivering: 'bg-cyan-100 text-cyan-800',
     delivered: 'bg-green-100 text-green-800',
+    closed: 'bg-slate-100 text-slate-700',
     cancelled: 'bg-red-100 text-red-800',
   };
 
   const statusLabels: Record<Order['status'], string> = {
-    pending: 'Pendiente',
-    confirmed: 'Confirmado',
-    preparing: 'Preparando',
-    delivering: 'En camino',
-    delivered: 'Entregado',
-    cancelled: 'Cancelado',
+    ...customerOrderStatusLabels,
   };
 
   const customerNavItems = [
@@ -275,7 +311,10 @@ export function CustomerDashboard() {
             return (
               <button
                 key={item.id}
-                onClick={() => setActiveView(item.id)}
+                onClick={() => {
+                  setActiveView(item.id);
+                  if (item.id === 'orders') void requestOrderNotificationPermission();
+                }}
                 className={`relative flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition ${
                   isActive ? 'bg-orange-50 text-orange-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
@@ -350,6 +389,7 @@ export function CustomerDashboard() {
                   key={item.id}
                   onClick={() => {
                     setActiveView(item.id);
+                    if (item.id === 'orders') void requestOrderNotificationPermission();
                     setIsMobileSidebarOpen(false);
                   }}
                   className={`relative flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition ${
@@ -412,6 +452,18 @@ export function CustomerDashboard() {
         </header>
 
         <main className="px-3 py-4 sm:px-5 lg:px-6 lg:py-5">
+        {statusNotification && (
+          <div className="fixed right-3 top-16 z-50 flex max-w-sm items-start gap-3 rounded-lg border border-orange-200 bg-white p-4 shadow-lg sm:right-5">
+            <BellRing className="mt-0.5 h-5 w-5 shrink-0 text-orange-500" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-900">Actualizacion de pedido</p>
+              <p className="mt-1 text-sm text-slate-600">{statusNotification.message}</p>
+            </div>
+            <button type="button" onClick={() => setStatusNotification(null)} className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Cerrar notificacion">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
         {activeView === 'cart' ? (
           <div>
             <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -1080,8 +1132,47 @@ function ProfileEditForm({ profile, onClose }: { profile: Profile; onClose: () =
     phone: profile.phone || '',
     delivery_address: profile.delivery_address || '',
   });
+  const [notificationPermission, setNotificationPermission] = useState<OrderNotificationPermissionState>(() => getOrderNotificationPermissionState());
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
+
+  async function handleNotificationPermission() {
+    const permission = await requestOrderNotificationPermission();
+    setNotificationPermission(permission);
+  }
+
+  const notificationStatus = {
+    granted: {
+      label: 'Activadas',
+      description: 'Vas a recibir avisos cuando cambie el estado de tus pedidos.',
+      button: 'Notificaciones activadas',
+      disabled: true,
+      className: 'bg-green-100 text-green-700',
+    },
+    default: {
+      label: 'Pendientes',
+      description: 'Activalas para recibir avisos del estado de tus pedidos en este dispositivo.',
+      button: 'Activar notificaciones',
+      disabled: false,
+      className: 'bg-orange-100 text-orange-700',
+    },
+    denied: {
+      label: 'Bloqueadas',
+      description: 'El navegador las tiene bloqueadas. Habilitalas desde los permisos del sitio.',
+      button: 'Permiso bloqueado',
+      disabled: true,
+      className: 'bg-red-100 text-red-700',
+    },
+    unsupported: {
+      label: 'No disponibles',
+      description: 'Este navegador no permite Push Web o falta configurar las claves de notificaciones.',
+      button: 'No disponible',
+      disabled: true,
+      className: 'bg-slate-100 text-slate-600',
+    },
+  } satisfies Record<OrderNotificationPermissionState, { label: string; description: string; button: string; disabled: boolean; className: string }>;
+
+  const currentNotificationStatus = notificationStatus[notificationPermission];
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -1153,6 +1244,27 @@ function ProfileEditForm({ profile, onClose }: { profile: Profile; onClose: () =
               rows={3}
               placeholder="Tu dirección completa"
             />
+          </div>
+
+          <div className="rounded-lg border border-gray-200 p-4">
+            <div className="flex items-start gap-3">
+              <BellRing className="mt-0.5 h-5 w-5 shrink-0 text-orange-500" />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-semibold text-gray-800">Notificaciones de pedidos</p>
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${currentNotificationStatus.className}`}>{currentNotificationStatus.label}</span>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">{currentNotificationStatus.description}</p>
+                <button
+                  type="button"
+                  onClick={() => void handleNotificationPermission()}
+                  disabled={currentNotificationStatus.disabled}
+                  className="mt-3 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {currentNotificationStatus.button}
+                </button>
+              </div>
+            </div>
           </div>
 
           {message && (

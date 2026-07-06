@@ -15,7 +15,7 @@ export type Profile = {
   full_name: string;
   phone: string | null;
   delivery_address: string | null;
-  role: 'customer' | 'restaurant_owner' | 'admin' | 'driver';
+  role: 'customer' | 'restaurant_owner' | 'admin' | 'driver' | 'waiter';
   created_at: string;
   updated_at: string;
 };
@@ -31,6 +31,39 @@ export type Restaurant = {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type RestaurantTable = {
+  id: string;
+  restaurant_id: string;
+  table_number: number;
+  label: string | null;
+  seats: number | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RestaurantReservation = {
+  id: string;
+  restaurant_id: string;
+  table_id: string | null;
+  customer_name: string;
+  customer_phone: string | null;
+  customer_email: string | null;
+  reservation_at: string;
+  party_size: number | null;
+  status: 'pending' | 'confirmed' | 'cancelled' | 'completed';
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RestaurantWaiter = {
+  restaurant_id: string;
+  waiter_id: string;
+  is_active: boolean;
+  created_at: string;
 };
 
 export type MenuItem = {
@@ -64,10 +97,12 @@ export type Order = {
   customer_id: string | null;
   guest_customer_name: string | null;
   restaurant_id: string;
-  status: 'pending' | 'confirmed' | 'preparing' | 'delivering' | 'delivered' | 'cancelled';
-  delivery_method: 'delivery' | 'pickup';
+  status: 'pending' | 'confirmed' | 'preparing' | 'delivering' | 'delivered' | 'closed' | 'cancelled';
+  delivery_method: 'delivery' | 'pickup' | 'dine_in';
+  dining_table_id: string | null;
   total_amount: number;
   delivery_address: string;
+  waiter_id: string | null;
   latitude: number | null;
   longitude: number | null;
   customer_notes: string | null;

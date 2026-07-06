@@ -121,6 +121,7 @@ export function AdminDashboard() {
     restaurant_owner: 'Dueño de Restaurante',
     admin: 'Administrador',
     driver: 'Repartidor',
+    waiter: 'Mozo',
   };
 
   const adminNavItems = [

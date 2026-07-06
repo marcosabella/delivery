@@ -150,7 +150,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const role: Profile['role'] =
       authUser.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL
         ? 'admin'
-        : metadataRole === 'admin' || metadataRole === 'restaurant_owner' || metadataRole === 'driver'
+        : metadataRole === 'admin' || metadataRole === 'restaurant_owner' || metadataRole === 'driver' || metadataRole === 'waiter'
           ? metadataRole
           : 'customer';
 

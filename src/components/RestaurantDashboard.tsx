@@ -1,8 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { supabase, DishCategory, Restaurant, MenuItem, Order } from '../lib/supabase';
+import { supabase, DishCategory, Restaurant, RestaurantTable, RestaurantReservation, MenuItem, Order } from '../lib/supabase';
 import { useGeolocation } from '../hooks/useGeolocation';
 import { addDefaultLocality } from '../lib/address';
+import { openOrderTicket, PrintableOrderTicket } from '../lib/orderTicket';
+import { notifyCustomerOrderStatus, shouldNotifyCustomerOrderStatus } from '../lib/orderStatusNotifications';
+import { TableCloseModal } from './TableCloseModal';
 import {
   LogOut,
   Plus,
@@ -29,6 +32,9 @@ import {
   Printer,
   UserPlus,
   Users,
+  Hash,
+  CalendarDays,
+  BellRing,
 } from 'lucide-react';
 
 type RestaurantOrder = Order & {
@@ -39,6 +45,7 @@ type RestaurantOrder = Order & {
   };
   order_items?: Array<{
     id: string;
+    menu_item_id: string;
     quantity: number;
     unit_price: number;
     subtotal: number;
@@ -47,15 +54,62 @@ type RestaurantOrder = Order & {
       category: string | null;
     } | null;
   }>;
+  dining_table?: {
+    table_number: number;
+    label: string | null;
+  } | null;
+  waiter?: {
+    full_name: string | null;
+    email: string | null;
+  } | null;
 };
 
 type OrderGroupId = 'pending' | 'kitchen' | 'delivery' | 'closed';
 type HistoryPeriod = 'today' | '7days' | '30days' | 'all';
+type RestaurantTab = 'menu' | 'orders' | 'route' | 'drivers' | 'waiters' | 'tables' | 'reservations';
+
+type ReservationStatus = RestaurantReservation['status'];
+
+type RestaurantReservationWithTable = RestaurantReservation & {
+  table?: {
+    table_number: number;
+    label: string | null;
+  } | null;
+};
+
+type ReservationInput = {
+  customerName: string;
+  customerPhone: string;
+  customerEmail: string;
+  reservationAt: string;
+  partySize: string;
+  tableId: string;
+  status: ReservationStatus;
+  notes: string;
+};
 
 type RestaurantDriver = {
   driver_id: string;
   is_active: boolean;
   driver: { id: string; full_name: string; email: string; phone: string | null };
+};
+
+type RestaurantWaiter = {
+  waiter_id: string;
+  is_active: boolean;
+  waiter: { id: string; full_name: string; email: string; phone: string | null };
+};
+
+type OrderProfile = {
+  id: string;
+  full_name: string | null;
+  email: string | null;
+  phone: string | null;
+};
+
+type FallbackOrderItem = NonNullable<RestaurantOrder['order_items']>[number] & {
+  order_id: string;
+  menu_item?: { name: string | null; category: string | null } | Array<{ name: string | null; category: string | null }> | null;
 };
 
 type RouteHistory = {
@@ -88,6 +142,20 @@ const historyPeriodOptions: Array<{ value: HistoryPeriod; label: string }> = [
   { value: 'all', label: 'Todo el historial' },
 ];
 
+const reservationStatusLabels: Record<ReservationStatus, string> = {
+  pending: 'Pendiente',
+  confirmed: 'Confirmada',
+  cancelled: 'Cancelada',
+  completed: 'Completada',
+};
+
+const reservationStatusColors: Record<ReservationStatus, string> = {
+  pending: 'bg-yellow-100 text-yellow-800',
+  confirmed: 'bg-blue-100 text-blue-800',
+  cancelled: 'bg-red-100 text-red-800',
+  completed: 'bg-green-100 text-green-800',
+};
+
 function getHistoryPeriodStart(period: HistoryPeriod) {
   if (period === 'all') return null;
 
@@ -106,55 +174,18 @@ function isWithinHistoryPeriod(dateValue: string, period: HistoryPeriod) {
   return new Date(dateValue) >= start;
 }
 
-type PrintableOrderTicket = {
-  orderId: string;
-  customerName: string;
-  deliveryAddress: string;
-  totalAmount: number;
-  items: Array<{ name: string; quantity: number; subtotal: number }>;
-};
-
-function openOrderTicket(restaurantName: string, ticket: PrintableOrderTicket) {
-  const escapeHtml = (value: string) => value.replace(
-    /[&<>'"]/g,
-    (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] || character,
-  );
-  const ticketWindow = window.open('', '_blank', 'width=420,height=640');
-  if (!ticketWindow) return false;
-
-  const itemRows = ticket.items.map((item) =>
-    `<tr><td><strong>${item.quantity} x</strong> ${escapeHtml(item.name)}</td><td>${escapeHtml(moneyFormatter.format(item.subtotal))}</td></tr>`,
-  ).join('');
-
-  ticketWindow.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8">
-    <title>Pedido #${escapeHtml(ticket.orderId.slice(0, 8))}</title><style>
-    @page { margin: 8mm; } body { font-family: Arial, sans-serif; color: #111; margin: 0; }
-    .ticket { max-width: 80mm; margin: 0 auto; } h1 { margin: 0 0 12px; text-align: center; font-size: 22px; }
-    .order { border-block: 2px dashed #111; padding: 10px 0; font-size: 18px; }
-    .info { margin: 10px 0; font-size: 15px; line-height: 1.4; } table { width: 100%; border-collapse: collapse; }
-    td { border-top: 1px solid #bbb; padding: 10px 0; font-size: 15px; vertical-align: top; }
-    td:last-child { text-align: right; white-space: nowrap; } .total { border-top: 2px solid #111; padding-top: 10px; text-align: right; font-size: 18px; }
-    </style></head><body><main class="ticket"><h1>${escapeHtml(restaurantName)}</h1>
-    <div class="order"><strong>Pedido #${escapeHtml(ticket.orderId.slice(0, 8))}</strong></div>
-    <div class="info"><strong>Cliente:</strong> ${escapeHtml(ticket.customerName)}</div>
-    <div class="info"><strong>Domicilio de entrega:</strong> ${escapeHtml(ticket.deliveryAddress || 'No informado')}</div>
-    <table><tbody>${itemRows}</tbody></table>
-    <p class="total"><strong>Total: ${escapeHtml(moneyFormatter.format(ticket.totalAmount))}</strong></p>
-    </main><script>window.addEventListener('load', () => { window.print(); window.close(); });</script></body></html>`);
-  ticketWindow.document.close();
-  return true;
-}
-
 export function RestaurantDashboard() {
   const { profile, signOut } = useAuth();
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [selectedRestaurant, setSelectedRestaurant] = useState<Restaurant | null>(null);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [dishCategories, setDishCategories] = useState<DishCategory[]>([]);
+  const [tables, setTables] = useState<RestaurantTable[]>([]);
+  const [reservations, setReservations] = useState<RestaurantReservationWithTable[]>([]);
   const [orders, setOrders] = useState<RestaurantOrder[]>([]);
   const [showMenuForm, setShowMenuForm] = useState(false);
   const [showOrderForm, setShowOrderForm] = useState(false);
-  const [activeTab, setActiveTab] = useState<'menu' | 'orders' | 'route' | 'drivers'>('orders');
+  const [activeTab, setActiveTab] = useState<RestaurantTab>('orders');
   const [activeOrderGroupId, setActiveOrderGroupId] = useState<OrderGroupId>('pending');
   const [orderHistoryPeriod, setOrderHistoryPeriod] = useState<HistoryPeriod>('today');
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
@@ -163,14 +194,24 @@ export function RestaurantDashboard() {
   const [routeOrderIds, setRouteOrderIds] = useState<string[]>([]);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [drivers, setDrivers] = useState<RestaurantDriver[]>([]);
+  const [waiters, setWaiters] = useState<RestaurantWaiter[]>([]);
   const [routes, setRoutes] = useState<RouteHistory[]>([]);
   const [routeHistoryPeriod, setRouteHistoryPeriod] = useState<HistoryPeriod>('today');
   const [activeRouteOrderIds, setActiveRouteOrderIds] = useState<Set<string>>(new Set());
   const [selectedDriverId, setSelectedDriverId] = useState('');
   const [showDriverForm, setShowDriverForm] = useState(false);
   const [editingDriver, setEditingDriver] = useState<RestaurantDriver | null>(null);
+  const [showWaiterForm, setShowWaiterForm] = useState(false);
+  const [editingWaiter, setEditingWaiter] = useState<RestaurantWaiter | null>(null);
+  const [editingReservation, setEditingReservation] = useState<RestaurantReservationWithTable | null>(null);
+  const [closingTableOrder, setClosingTableOrder] = useState<RestaurantOrder | null>(null);
+  const [closingTable, setClosingTable] = useState(false);
   const [routeError, setRouteError] = useState('');
+  const [orderLoadError, setOrderLoadError] = useState('');
   const [dispatchingRoute, setDispatchingRoute] = useState(false);
+  const [orderNotification, setOrderNotification] = useState<{ count: number; message: string } | null>(null);
+  const knownOrderIdsRef = useRef<Set<string>>(new Set());
+  const hasLoadedOrdersRef = useRef(false);
 
   useEffect(() => {
     if (profile) {
@@ -184,6 +225,9 @@ export function RestaurantDashboard() {
       loadMenuItems();
       loadOrders();
       loadDrivers();
+      loadWaiters();
+      loadTables();
+      loadReservations();
     }
   }, [selectedRestaurant]);
 
@@ -200,6 +244,25 @@ export function RestaurantDashboard() {
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
   }, [selectedRestaurant, routeHistoryPeriod]);
+
+  useEffect(() => {
+    if (!orderNotification) return;
+    const timeoutId = window.setTimeout(() => setOrderNotification(null), 8000);
+    return () => window.clearTimeout(timeoutId);
+  }, [orderNotification]);
+
+  useEffect(() => {
+    if (!selectedRestaurant) return;
+    knownOrderIdsRef.current = new Set();
+    hasLoadedOrdersRef.current = false;
+    setOrderNotification(null);
+    const channel = supabase
+      .channel(`restaurant-orders-${selectedRestaurant.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders', filter: `restaurant_id=eq.${selectedRestaurant.id}` }, () => void loadOrders())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, () => void loadOrders())
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [selectedRestaurant]);
 
   async function loadRestaurants() {
     const { data } = await supabase
@@ -242,36 +305,144 @@ export function RestaurantDashboard() {
   async function loadOrders() {
     if (!selectedRestaurant) return;
 
-    const { data } = await supabase
+    setOrderLoadError('');
+
+    const fullQuery = supabase
       .from('orders')
       .select(`
         *,
         customer:profiles!orders_customer_id_fkey (full_name, email, phone),
         order_items (
           id,
+          menu_item_id,
           quantity,
           unit_price,
           subtotal,
           menu_item:menu_items (name, category)
-        )
+        ),
+        dining_table:restaurant_tables (table_number, label),
+        waiter:profiles!orders_waiter_id_fkey (full_name, email)
       `)
       .eq('restaurant_id', selectedRestaurant.id)
       .order('created_at', { ascending: false });
 
-    if (data) {
-      const loadedOrders = data as RestaurantOrder[];
-      setOrders(loadedOrders);
-      setSelectedOrderId((currentId) => {
-        if (currentId && loadedOrders.some((order) => order.id === currentId)) return currentId;
-        setShowOrderDetail(false);
-        return null;
-      });
-      setRouteOrderIds((currentIds) =>
-        currentIds.filter((id) =>
-          loadedOrders.some((order) => order.id === id && canAddToRoute(order))
-        )
+    const { data, error } = await fullQuery;
+    let loadedOrders = data as RestaurantOrder[] | null;
+
+    if (error) {
+      console.error('Error loading orders with related data:', error);
+
+      const fallbackResult = await supabase
+        .from('orders')
+        .select('*')
+        .eq('restaurant_id', selectedRestaurant.id)
+        .order('created_at', { ascending: false });
+
+      if (fallbackResult.error) {
+        console.error('Error loading orders:', fallbackResult.error);
+        setOrderLoadError(`No se pudieron cargar los pedidos: ${fallbackResult.error.message}`);
+        setOrders([]);
+        return;
+      }
+
+      const baseOrders = (fallbackResult.data || []) as RestaurantOrder[];
+      const orderIds = baseOrders.map((order) => order.id);
+      const profileIds = Array.from(new Set(
+        baseOrders
+          .flatMap((order) => [order.customer_id, order.waiter_id])
+          .filter((id): id is string => Boolean(id))
+      ));
+      const tableIds = Array.from(new Set(
+        baseOrders
+          .map((order) => order.dining_table_id)
+          .filter((id): id is string => Boolean(id))
+      ));
+
+      const [itemsResult, profilesResult, tablesResult] = await Promise.all([
+        orderIds.length > 0
+          ? supabase
+            .from('order_items')
+            .select(`
+              id,
+              order_id,
+              menu_item_id,
+              quantity,
+              unit_price,
+              subtotal,
+              menu_item:menu_items (name, category)
+            `)
+            .in('order_id', orderIds)
+          : Promise.resolve({ data: [], error: null }),
+        profileIds.length > 0
+          ? supabase
+            .from('profiles')
+            .select('id, full_name, email, phone')
+            .in('id', profileIds)
+          : Promise.resolve({ data: [], error: null }),
+        tableIds.length > 0
+          ? supabase
+            .from('restaurant_tables')
+            .select('id, table_number, label')
+            .in('id', tableIds)
+          : Promise.resolve({ data: [], error: null }),
+      ]);
+
+      if (itemsResult.error) console.error('Error loading order items:', itemsResult.error);
+      if (profilesResult.error) console.error('Error loading order profiles:', profilesResult.error);
+      if (tablesResult.error) console.error('Error loading order tables:', tablesResult.error);
+
+      const itemsByOrder = new Map<string, RestaurantOrder['order_items']>();
+      for (const item of (itemsResult.data || []) as unknown as FallbackOrderItem[]) {
+        const currentItems = itemsByOrder.get(item.order_id) || [];
+        currentItems.push({
+          ...item,
+          menu_item: Array.isArray(item.menu_item) ? item.menu_item[0] || null : item.menu_item,
+        });
+        itemsByOrder.set(item.order_id, currentItems);
+      }
+
+      const profilesById = new Map(
+        ((profilesResult.data || []) as OrderProfile[]).map((profile) => [profile.id, profile])
       );
+      const tablesById = new Map(
+        ((tablesResult.data || []) as Array<{ id: string; table_number: number; label: string | null }>).map((table) => [table.id, table])
+      );
+
+      loadedOrders = baseOrders.map((order) => ({
+        ...order,
+        customer: order.customer_id ? profilesById.get(order.customer_id) : undefined,
+        waiter: order.waiter_id ? profilesById.get(order.waiter_id) : undefined,
+        dining_table: order.dining_table_id ? tablesById.get(order.dining_table_id) || null : null,
+        order_items: itemsByOrder.get(order.id) || [],
+      }));
     }
+
+    const safeOrders = loadedOrders || [];
+    const previousOrderIds = knownOrderIdsRef.current;
+    const isRefreshAfterInitialLoad = hasLoadedOrdersRef.current;
+    const newPendingOrders = safeOrders.filter((order) => order.status === 'pending' && !previousOrderIds.has(order.id));
+    knownOrderIdsRef.current = new Set(safeOrders.map((order) => order.id));
+    hasLoadedOrdersRef.current = true;
+
+    if (isRefreshAfterInitialLoad && newPendingOrders.length > 0) {
+      const dineInCount = newPendingOrders.filter((order) => order.delivery_method === 'dine_in').length;
+      const message = dineInCount === newPendingOrders.length
+        ? dineInCount === 1 ? 'Nuevo pedido de mesa recibido.' : `${dineInCount} nuevos pedidos de mesa recibidos.`
+        : newPendingOrders.length === 1 ? 'Nuevo pedido recibido.' : `${newPendingOrders.length} nuevos pedidos recibidos.`;
+      setOrderNotification({ count: newPendingOrders.length, message });
+    }
+
+    setOrders(safeOrders);
+    setSelectedOrderId((currentId) => {
+      if (currentId && safeOrders.some((order) => order.id === currentId)) return currentId;
+      setShowOrderDetail(false);
+      return null;
+    });
+    setRouteOrderIds((currentIds) =>
+      currentIds.filter((id) =>
+        safeOrders.some((order) => order.id === id && canAddToRoute(order))
+      )
+    );
   }
 
   async function loadDrivers() {
@@ -284,6 +455,109 @@ export function RestaurantDashboard() {
     const loadedDrivers = (data || []) as unknown as RestaurantDriver[];
     setDrivers(loadedDrivers);
     setSelectedDriverId((current) => loadedDrivers.some((item) => item.driver_id === current && item.is_active) ? current : loadedDrivers.find((item) => item.is_active)?.driver_id || '');
+  }
+
+  async function loadWaiters() {
+    if (!selectedRestaurant) return;
+    const { data } = await supabase
+      .from('restaurant_waiters')
+      .select('waiter_id, is_active, waiter:profiles!restaurant_waiters_waiter_id_fkey (id, full_name, email, phone)')
+      .eq('restaurant_id', selectedRestaurant.id)
+      .order('created_at');
+    setWaiters((data || []) as unknown as RestaurantWaiter[]);
+  }
+
+  async function loadTables() {
+    if (!selectedRestaurant) return;
+
+    const { data } = await supabase
+      .from('restaurant_tables')
+      .select('*')
+      .eq('restaurant_id', selectedRestaurant.id)
+      .order('table_number', { ascending: true });
+
+    if (data) setTables(data as RestaurantTable[]);
+  }
+
+  async function loadReservations() {
+    if (!selectedRestaurant) return;
+
+    const { data } = await supabase
+      .from('restaurant_reservations')
+      .select('*, table:restaurant_tables (table_number, label)')
+      .eq('restaurant_id', selectedRestaurant.id)
+      .order('reservation_at', { ascending: true });
+
+    if (data) setReservations(data as RestaurantReservationWithTable[]);
+  }
+
+  async function handleSaveReservation(form: ReservationInput, reservationId?: string) {
+    if (!selectedRestaurant) return;
+
+    const payload = {
+      restaurant_id: selectedRestaurant.id,
+      table_id: form.tableId || null,
+      customer_name: form.customerName.trim(),
+      customer_phone: form.customerPhone.trim() || null,
+      customer_email: form.customerEmail.trim() || null,
+      reservation_at: new Date(form.reservationAt).toISOString(),
+      party_size: form.partySize ? Number(form.partySize) : null,
+      status: form.status,
+      notes: form.notes.trim() || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (reservationId) {
+      await supabase
+        .from('restaurant_reservations')
+        .update(payload)
+        .eq('id', reservationId);
+      setEditingReservation(null);
+    } else {
+      await supabase
+        .from('restaurant_reservations')
+        .insert(payload);
+    }
+
+    loadReservations();
+  }
+
+  async function handleUpdateReservationStatus(reservationId: string, status: ReservationStatus) {
+    await supabase
+      .from('restaurant_reservations')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('id', reservationId);
+    loadReservations();
+  }
+
+  async function handleDeleteReservation(reservationId: string) {
+    await supabase.from('restaurant_reservations').delete().eq('id', reservationId);
+    loadReservations();
+  }
+
+  async function handleCreateTable(tableNumber: number, seats: number | null) {
+    if (!selectedRestaurant) return;
+    await supabase
+      .from('restaurant_tables')
+      .insert({
+        restaurant_id: selectedRestaurant.id,
+        table_number: tableNumber,
+        seats,
+      });
+    loadTables();
+  }
+
+  async function handleToggleTable(table: RestaurantTable) {
+    await supabase
+      .from('restaurant_tables')
+      .update({ is_active: !table.is_active, updated_at: new Date().toISOString() })
+      .eq('id', table.id);
+    loadTables();
+  }
+
+  async function handleDeleteTable(tableId: string) {
+    await supabase.from('restaurant_tables').delete().eq('id', tableId);
+    loadTables();
   }
 
   async function loadRoutes() {
@@ -316,12 +590,13 @@ export function RestaurantDashboard() {
   }
 
   async function handleUpdateOrderStatus(orderId: string, status: Order['status']) {
-    await supabase
+    const { error } = await supabase
       .from('orders')
       .update({ status, updated_at: new Date().toISOString() })
       .eq('id', orderId);
 
-    loadOrders();
+    if (!error && shouldNotifyCustomerOrderStatus(status)) void notifyCustomerOrderStatus(orderId);
+    void loadOrders();
   }
 
   function toggleRouteOrder(orderId: string) {
@@ -350,7 +625,10 @@ export function RestaurantDashboard() {
       target_order_ids: routeOrderIds,
     });
     if (error) setRouteError(error.message);
-    else setRouteOrderIds([]);
+    else {
+      routeOrderIds.forEach((orderId) => void notifyCustomerOrderStatus(orderId));
+      setRouteOrderIds([]);
+    }
     await Promise.all([loadOrders(), loadRoutes()]);
     setDispatchingRoute(false);
   }
@@ -374,6 +652,7 @@ export function RestaurantDashboard() {
     preparing: 'bg-orange-100 text-orange-800',
     delivering: 'bg-cyan-100 text-cyan-800',
     delivered: 'bg-green-100 text-green-800',
+    closed: 'bg-slate-100 text-slate-700',
     cancelled: 'bg-red-100 text-red-800',
   };
 
@@ -383,6 +662,7 @@ export function RestaurantDashboard() {
     preparing: 'Preparando',
     delivering: 'En camino',
     delivered: 'Entregado',
+    closed: 'Mesa cerrada',
     cancelled: 'Cancelado',
   };
 
@@ -402,15 +682,16 @@ export function RestaurantDashboard() {
   ];
   const closedOrders = orders.filter(
     (order) =>
-      (order.status === 'delivered' || order.status === 'cancelled')
+      (order.status === 'delivered' || order.status === 'closed' || order.status === 'cancelled')
       && isWithinHistoryPeriod(order.updated_at || order.created_at, orderHistoryPeriod)
   );
+  const pendingOrderCount = orders.filter((order) => order.status === 'pending').length;
   const filteredRoutes = routes.filter((route) => isWithinHistoryPeriod(route.assigned_at, routeHistoryPeriod));
   const orderGroups: Array<{ id: OrderGroupId; title: string; icon: typeof Clock; orders: RestaurantOrder[] }> = [
     { id: 'pending', title: 'Nuevos', icon: Clock, orders: orders.filter((order) => order.status === 'pending') },
     { id: 'kitchen', title: 'Cocina', icon: ChefHat, orders: orders.filter((order) => order.status === 'confirmed' || order.status === 'preparing') },
     { id: 'delivery', title: 'Reparto', icon: Bike, orders: orders.filter((order) => order.status === 'delivering') },
-    { id: 'closed', title: 'Cerrados', icon: CheckCircle2, orders: closedOrders },
+    { id: 'closed', title: 'Entregados/Cerrados', icon: CheckCircle2, orders: closedOrders },
   ];
   const activeOrderGroup = orderGroups.find((group) => group.id === activeOrderGroupId) || orderGroups[0];
   const ActiveOrderGroupIcon = activeOrderGroup.icon;
@@ -423,6 +704,10 @@ export function RestaurantDashboard() {
     return order.delivery_method === 'pickup';
   }
 
+  function isDineInOrder(order: RestaurantOrder) {
+    return order.delivery_method === 'dine_in';
+  }
+
   function canAddToRoute(order: RestaurantOrder) {
     return !isPickupOrder(order)
       && (order.status === 'confirmed' || order.status === 'preparing' || order.status === 'delivering')
@@ -430,16 +715,23 @@ export function RestaurantDashboard() {
   }
 
   function getFulfillmentLabel(order: RestaurantOrder) {
+    if (isDineInOrder(order)) return 'Pedido de mesa';
     return isPickupOrder(order) ? 'Retira en restaurante' : 'Entrega a domicilio';
   }
 
   function getOrderAddressLabel(order: RestaurantOrder) {
+    if (isDineInOrder(order)) {
+      const tableNumber = order.dining_table?.table_number;
+      const label = order.dining_table?.label?.trim();
+      return tableNumber ? `Mesa ${tableNumber}${label ? ` - ${label}` : ''}` : order.delivery_address;
+    }
     return isPickupOrder(order)
       ? `Retiro en restaurante${order.delivery_address ? ` - ${order.delivery_address}` : ''}`
       : order.delivery_address;
   }
 
   function getOrderLocationQuery(order: RestaurantOrder) {
+    if (isDineInOrder(order)) return selectedRestaurant?.address?.trim() || '';
     const address = order.delivery_address?.trim();
     if (address) return address;
 
@@ -513,7 +805,7 @@ export function RestaurantDashboard() {
   function getNextStatus(order: RestaurantOrder): Order['status'] | null {
     if (order.status === 'pending') return 'confirmed';
     if (order.status === 'confirmed') return 'preparing';
-    if (isPickupOrder(order) && order.status === 'preparing') return 'delivered';
+    if ((isPickupOrder(order) || isDineInOrder(order)) && order.status === 'preparing') return 'delivered';
     if (order.status === 'preparing') return 'delivering';
     if (order.status === 'delivering') return 'delivered';
     return null;
@@ -522,10 +814,22 @@ export function RestaurantDashboard() {
   function getNextStatusLabel(order: RestaurantOrder) {
     if (order.status === 'pending') return 'Confirmar';
     if (order.status === 'confirmed') return 'Preparar';
-    if (isPickupOrder(order) && order.status === 'preparing') return 'Entregar';
+    if ((isPickupOrder(order) || isDineInOrder(order)) && order.status === 'preparing') return 'Entregar';
     if (order.status === 'preparing') return 'Enviar';
     if (order.status === 'delivering') return 'Entregar';
     return '';
+  }
+
+  function handleCloseTableOrder(order: RestaurantOrder) {
+    setClosingTableOrder(order);
+  }
+
+  async function confirmCloseTableOrder() {
+    if (!closingTableOrder) return;
+    setClosingTable(true);
+    await handleUpdateOrderStatus(closingTableOrder.id, 'closed');
+    setClosingTable(false);
+    setClosingTableOrder(null);
   }
 
   function getCustomerName(order: RestaurantOrder) {
@@ -533,9 +837,33 @@ export function RestaurantDashboard() {
     const email = order.customer?.email?.trim();
     const phone = order.customer?.phone?.trim();
     const guestName = order.guest_customer_name?.trim();
+    if (isDineInOrder(order) && !name && !email && !phone && !guestName) return getOrderAddressLabel(order);
     return name || email || phone || guestName || (order.customer_id
       ? `Cliente #${order.customer_id.slice(0, 8)}`
       : 'Cliente sin registrar');
+  }
+
+  function getWaiterName(order: RestaurantOrder) {
+    return order.waiter?.full_name?.trim() || order.waiter?.email?.trim() || '';
+  }
+
+  function buildOrderTicket(order: RestaurantOrder): PrintableOrderTicket {
+    const waiterName = getWaiterName(order);
+
+    return {
+      orderId: order.id,
+      customerName: getCustomerName(order),
+      deliveryAddress: getOrderAddressLabel(order),
+      tableLabel: isDineInOrder(order) ? getOrderAddressLabel(order) : undefined,
+      waiterName: isDineInOrder(order) ? waiterName || 'No informado' : undefined,
+      totalAmount: order.total_amount,
+      notes: order.customer_notes,
+      items: (order.order_items || []).map((item) => ({
+        name: item.menu_item?.name || 'Producto',
+        quantity: item.quantity,
+        subtotal: item.subtotal,
+      })),
+    };
   }
 
   function handlePrintOrderTicket(order: RestaurantOrder) {
@@ -543,6 +871,8 @@ export function RestaurantDashboard() {
       orderId: order.id,
       customerName: getCustomerName(order),
       deliveryAddress: getOrderAddressLabel(order),
+      tableLabel: isDineInOrder(order) ? getOrderAddressLabel(order) : undefined,
+      waiterName: isDineInOrder(order) ? getWaiterName(order) || 'No informado' : undefined,
       totalAmount: order.total_amount,
       items: (order.order_items || []).map((item) => ({
         name: item.menu_item?.name || 'Producto',
@@ -624,7 +954,9 @@ export function RestaurantDashboard() {
               <h4 className="font-semibold text-gray-800 mb-2">{getFulfillmentLabel(order)}</h4>
               <div className="space-y-3">
                 <div className="flex items-start gap-2 text-sm text-gray-700">
-                  {isPickupOrder(order) ? (
+                  {isDineInOrder(order) ? (
+                    <Hash className="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" />
+                  ) : isPickupOrder(order) ? (
                     <Store className="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" />
                   ) : (
                     <MapPin className="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" />
@@ -637,6 +969,14 @@ export function RestaurantDashboard() {
                     <span>{order.customer.phone}</span>
                   </div>
                 )}
+                {isDineInOrder(order) && (
+                  <div className="flex items-center gap-2 text-sm text-gray-700">
+                    <UserPlus className="w-4 h-4 text-gray-500" />
+                    <span>Mozo: {getWaiterName(order) || 'No informado'}</span>
+                  </div>
+                )}
+                {!isDineInOrder(order) && (
+                  <>
                 <div className="rounded-lg overflow-hidden border border-gray-200 h-56">
                   <iframe title={`Ubicación del pedido ${order.id}`} src={getOrderEmbedUrl(order)} className="w-full h-full" loading="lazy" />
                 </div>
@@ -644,6 +984,8 @@ export function RestaurantDashboard() {
                   <Navigation className="w-4 h-4" />
                   Abrir ubicación
                 </a>
+                  </>
+                )}
               </div>
             </div>
 
@@ -676,6 +1018,16 @@ export function RestaurantDashboard() {
                   {routeOrderIds.includes(order.id) ? 'Quitar de ruta' : 'Sumar a ruta'}
                 </button>
               )}
+              {isDineInOrder(order) && order.status === 'delivered' && (
+                <button
+                  type="button"
+                  onClick={() => handleCloseTableOrder(order)}
+                  className="flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  Cerrar mesa
+                </button>
+              )}
             </div>
           </div>
         </section>
@@ -684,10 +1036,13 @@ export function RestaurantDashboard() {
   }
 
   const restaurantNavItems = [
-    { id: 'orders' as const, label: 'Pedidos', icon: PackageCheck },
+    { id: 'orders' as const, label: 'Pedidos', icon: PackageCheck, count: pendingOrderCount },
     { id: 'route' as const, label: 'Hoja de ruta', icon: Route },
+    { id: 'tables' as const, label: 'Mesas', icon: Hash },
+    { id: 'reservations' as const, label: 'Reservas', icon: CalendarDays },
     { id: 'menu' as const, label: 'Menu', icon: UtensilsCrossed },
     { id: 'drivers' as const, label: 'Repartidores', icon: Users },
+    { id: 'waiters' as const, label: 'Mozos', icon: UserPlus },
   ];
 
   return (
@@ -715,7 +1070,14 @@ export function RestaurantDashboard() {
                 }`}
               >
                 <Icon className="h-4 w-4" />
-                {item.label}
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                {'count' in item && (item.count ?? 0) > 0 && (
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                    isActive ? 'bg-orange-600 text-white' : 'bg-orange-100 text-orange-700'
+                  }`}>
+                    {item.count ?? 0}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -779,12 +1141,19 @@ export function RestaurantDashboard() {
                   className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition ${
                     isActive ? 'bg-orange-50 text-orange-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                   }`}
-                >
-                  <Icon className="h-4 w-4" />
-                  {item.label}
-                </button>
-              );
-            })}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                    {'count' in item && (item.count ?? 0) > 0 && (
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                        isActive ? 'bg-orange-600 text-white' : 'bg-orange-100 text-orange-700'
+                      }`}>
+                        {item.count ?? 0}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
           </nav>
           <div className="border-t border-slate-200 p-3">
             <p className="truncate px-2 pb-2 text-xs text-slate-500">{profile?.full_name}</p>
@@ -823,6 +1192,36 @@ export function RestaurantDashboard() {
         </header>
 
         <main className="px-3 py-4 sm:px-5 lg:px-6 lg:py-5">
+        {orderNotification && (
+          <div className="mb-4 rounded-lg border border-orange-200 bg-orange-50 px-4 py-3 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-orange-500 text-white">
+                  <BellRing className="h-4 w-4" />
+                  <span className="absolute -right-1 -top-1 rounded-full bg-red-600 px-1.5 text-[10px] font-bold leading-4 text-white">
+                    {orderNotification.count}
+                  </span>
+                </span>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-orange-900">{orderNotification.message}</p>
+                  <p className="text-xs text-orange-700">Pendientes: {pendingOrderCount}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('orders');
+                  setActiveOrderGroupId('pending');
+                  setShowOrderDetail(false);
+                  setOrderNotification(null);
+                }}
+                className="self-start rounded-lg bg-orange-500 px-3 py-2 text-sm font-semibold text-white transition hover:bg-orange-600 sm:self-auto"
+              >
+                Ver pedidos
+              </button>
+            </div>
+          </div>
+        )}
         {restaurants.length === 0 ? (
           <div className="rounded-lg bg-white p-8 text-center shadow-sm">
             <Store className="mx-auto mb-3 h-10 w-10 text-gray-300" />
@@ -1000,6 +1399,21 @@ export function RestaurantDashboard() {
                       </div>
                     </div>
 
+                    {orderLoadError && (
+                      <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <p>{orderLoadError}</p>
+                          <button
+                            type="button"
+                            onClick={() => void loadOrders()}
+                            className="self-start rounded-lg border border-red-300 px-3 py-1.5 text-sm font-semibold text-red-700 transition hover:bg-red-100 sm:self-auto"
+                          >
+                            Reintentar
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     {orders.length === 0 ? (
                       <div className="text-center py-12">
                         <Clock className="w-12 h-12 text-gray-300 mx-auto mb-3" />
@@ -1040,12 +1454,13 @@ export function RestaurantDashboard() {
                                     <tr>
                                       <th className="w-[9%] px-2 py-2 text-left font-semibold">Pedido</th>
                                       <th className="w-[13%] px-2 py-2 text-left font-semibold">Cliente</th>
+                                      <th className="w-[10%] px-2 py-2 text-left font-semibold">Mozo</th>
                                       <th className="w-[12%] px-2 py-2 text-left font-semibold">Fecha</th>
-                                      <th className="w-[17%] px-2 py-2 text-left font-semibold">Entrega</th>
+                                      <th className="w-[15%] px-2 py-2 text-left font-semibold">Entrega</th>
                                       <th className="w-[8%] px-2 py-2 text-right font-semibold">Total</th>
                                       <th className="w-[5%] px-2 py-2 text-center font-semibold">Items</th>
                                       <th className="w-[10%] px-2 py-2 text-left font-semibold">Estado</th>
-                                      <th className="w-[26%] px-2 py-2 text-right font-semibold">Acciones</th>
+                                      <th className="w-[18%] px-2 py-2 text-right font-semibold">Acciones</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-gray-100">
@@ -1068,12 +1483,23 @@ export function RestaurantDashboard() {
                                             <p className="truncate font-medium text-gray-800" title={getCustomerName(order)}>{getCustomerName(order)}</p>
                                             {order.customer?.phone && <p className="truncate text-[11px] text-gray-500">{order.customer.phone}</p>}
                                           </td>
+                                          <td className="min-w-0 px-2 py-2 align-middle">
+                                            {order.waiter_id || getWaiterName(order) ? (
+                                              <p className="truncate font-medium text-gray-700" title={getWaiterName(order) || 'No informado'}>
+                                                {getWaiterName(order) || 'No informado'}
+                                              </p>
+                                            ) : (
+                                              <p className="truncate text-gray-400">No informado</p>
+                                            )}
+                                          </td>
                                           <td className="whitespace-nowrap px-2 py-2 align-middle text-gray-700">
                                             {new Date(order.created_at).toLocaleDateString()} {new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                           </td>
                                           <td className="min-w-0 px-2 py-2 align-middle text-gray-600">
                                             <div className="flex items-center gap-1.5">
-                                              {isPickupOrder(order) ? (
+                                              {isDineInOrder(order) ? (
+                                                <Hash className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" />
+                                              ) : isPickupOrder(order) ? (
                                                 <Store className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" />
                                               ) : (
                                                 <MapPin className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" />
@@ -1131,7 +1557,17 @@ export function RestaurantDashboard() {
                                                   {isInRoute ? 'En ruta' : 'Ruta'}
                                                 </button>
                                               )}
-                                              {order.status !== 'delivered' && order.status !== 'cancelled' && (
+                                              {isDineInOrder(order) && order.status === 'delivered' && (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleCloseTableOrder(order)}
+                                                  className="inline-flex items-center justify-center gap-1 rounded-md bg-green-600 px-2 py-1 text-[11px] font-medium text-white transition hover:bg-green-700"
+                                                >
+                                                  <CheckCircle2 className="h-3.5 w-3.5" />
+                                                  Cerrar mesa
+                                                </button>
+                                              )}
+                                              {order.status !== 'delivered' && order.status !== 'closed' && order.status !== 'cancelled' && (
                                                 <button
                                                   type="button"
                                                   onClick={() => handleUpdateOrderStatus(order.id, 'cancelled')}
@@ -1424,6 +1860,28 @@ export function RestaurantDashboard() {
                   </section>
                 )}
 
+                {activeTab === 'tables' && selectedRestaurant && (
+                  <TableSettings
+                    tables={tables}
+                    onCreate={handleCreateTable}
+                    onToggle={handleToggleTable}
+                    onDelete={handleDeleteTable}
+                  />
+                )}
+
+                {activeTab === 'reservations' && selectedRestaurant && (
+                  <ReservationSettings
+                    reservations={reservations}
+                    tables={tables}
+                    editingReservation={editingReservation}
+                    onEdit={setEditingReservation}
+                    onCancelEdit={() => setEditingReservation(null)}
+                    onSave={handleSaveReservation}
+                    onUpdateStatus={handleUpdateReservationStatus}
+                    onDelete={handleDeleteReservation}
+                  />
+                )}
+
                 {activeTab === 'drivers' && (
                   <section className="rounded-lg border border-gray-200 bg-white p-4">
                     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -1454,6 +1912,37 @@ export function RestaurantDashboard() {
                     )}
                   </section>
                 )}
+
+                {activeTab === 'waiters' && (
+                  <section className="rounded-lg border border-gray-200 bg-white p-4">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                      <div><h2 className="text-xl font-bold text-gray-800">Mozos</h2><p className="text-sm text-gray-600">Usuarios habilitados para registrar y editar pedidos de mesa desde el movil.</p></div>
+                      <button onClick={() => setShowWaiterForm(true)} className="inline-flex items-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600"><UserPlus className="h-4 w-4" />Nuevo mozo</button>
+                    </div>
+                    {waiters.length === 0 ? <div className="rounded-lg border border-dashed border-gray-300 py-10 text-center text-sm text-gray-500">No hay mozos cargados.</div> : (
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {waiters.map((item) => (
+                          <div key={item.waiter_id} className="rounded-lg border border-gray-200 p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="font-semibold text-gray-800">{item.waiter.full_name}</p>
+                                <p className="truncate text-sm text-gray-500">{item.waiter.email}</p>
+                                {item.waiter.phone && <p className="text-sm text-gray-500">{item.waiter.phone}</p>}
+                              </div>
+                              <div className="flex shrink-0 flex-col items-end gap-2">
+                                <span className={`rounded-full px-2 py-1 text-xs font-medium ${item.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{item.is_active ? 'Activo' : 'Inactivo'}</span>
+                                <button type="button" onClick={() => setEditingWaiter(item)} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                                  <Edit2 className="h-4 w-4" />
+                                  Editar
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                )}
               </div>
             </div>
           </>
@@ -1473,6 +1962,8 @@ export function RestaurantDashboard() {
         <RestaurantOrderForm
           restaurant={selectedRestaurant}
           menuItems={menuItems}
+          tables={tables}
+          tableOrders={orders}
           onClose={() => setShowOrderForm(false)}
           onCreated={() => {
             setShowOrderForm(false);
@@ -1494,6 +1985,21 @@ export function RestaurantDashboard() {
       )}
       {editingDriver && selectedRestaurant && (
         <DriverForm driver={editingDriver} restaurantId={selectedRestaurant.id} onClose={() => { setEditingDriver(null); loadDrivers(); }} />
+      )}
+      {showWaiterForm && selectedRestaurant && (
+        <WaiterForm restaurantId={selectedRestaurant.id} onClose={() => { setShowWaiterForm(false); loadWaiters(); }} />
+      )}
+      {editingWaiter && selectedRestaurant && (
+        <WaiterForm waiter={editingWaiter} restaurantId={selectedRestaurant.id} onClose={() => { setEditingWaiter(null); loadWaiters(); }} />
+      )}
+      {closingTableOrder && selectedRestaurant && (
+        <TableCloseModal
+          restaurantName={selectedRestaurant.name}
+          ticket={buildOrderTicket(closingTableOrder)}
+          closing={closingTable}
+          onClose={() => setClosingTableOrder(null)}
+          onConfirm={() => void confirmCloseTableOrder()}
+        />
       )}
     </div>
   );
@@ -1560,14 +2066,392 @@ function DriverForm({ restaurantId, driver, onClose }: { restaurantId: string; d
   );
 }
 
+function WaiterForm({ restaurantId, waiter, onClose }: { restaurantId: string; waiter?: RestaurantWaiter; onClose: () => void }) {
+  const isEditing = Boolean(waiter);
+  const [form, setForm] = useState({
+    fullName: waiter?.waiter.full_name || '',
+    email: waiter?.waiter.email || '',
+    phone: waiter?.waiter.phone || '',
+    password: '',
+    isActive: waiter?.is_active ?? true,
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    setLoading(true);
+    setError('');
+    const { data, error: saveError } = await supabase.functions.invoke('admin-users', {
+      body: {
+        action: isEditing ? 'update-waiter' : 'create',
+        role: 'waiter',
+        restaurantId,
+        userId: waiter?.waiter_id,
+        fullName: form.fullName.trim(),
+        email: form.email.trim(),
+        phone: form.phone.trim() || null,
+        password: form.password,
+        isActive: form.isActive,
+      },
+    });
+    if (saveError || data?.error) {
+      setError(data?.error || saveError?.message || 'No se pudo guardar el mozo');
+      setLoading(false);
+      return;
+    }
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-md rounded-xl bg-white p-6">
+        <h2 className="text-xl font-bold text-gray-800">{isEditing ? 'Editar mozo' : 'Nuevo mozo'}</h2>
+        <p className="mb-5 mt-1 text-sm text-gray-500">{isEditing ? 'Actualiza los datos de acceso y disponibilidad.' : 'Se creara un acceso asociado unicamente a este restaurante.'}</p>
+        {error && <div className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <input required value={form.fullName} onChange={(event) => setForm({ ...form, fullName: event.target.value })} placeholder="Nombre completo" className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+          <input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="Email" className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+          <input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} placeholder="Telefono" className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+          <input required={!isEditing} minLength={form.password ? 6 : undefined} type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder={isEditing ? 'Nueva contrasena (opcional)' : 'Contrasena (minimo 6 caracteres)'} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+          {isEditing && (
+            <label className="flex items-center gap-3 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700">
+              <input type="checkbox" checked={form.isActive} onChange={(event) => setForm({ ...form, isActive: event.target.checked })} className="h-4 w-4 rounded border-gray-300 text-orange-500 focus:ring-orange-500" />
+              Mozo activo para este restaurante
+            </label>
+          )}
+          <div className="flex gap-3 pt-2"><button type="button" onClick={onClose} className="flex-1 rounded-lg border border-gray-300 px-4 py-2 text-gray-700">Cancelar</button><button disabled={loading} className="flex-1 rounded-lg bg-orange-500 px-4 py-2 font-semibold text-white disabled:opacity-50">{loading ? 'Guardando...' : isEditing ? 'Guardar' : 'Crear'}</button></div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function TableSettings({
+  tables,
+  onCreate,
+  onToggle,
+  onDelete,
+}: {
+  tables: RestaurantTable[];
+  onCreate: (tableNumber: number, seats: number | null) => void;
+  onToggle: (table: RestaurantTable) => void;
+  onDelete: (tableId: string) => void;
+}) {
+  const [tableNumber, setTableNumber] = useState('');
+  const [seats, setSeats] = useState('');
+  const [error, setError] = useState('');
+
+  function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const parsedTableNumber = Number(tableNumber);
+    const parsedSeats = seats ? Number(seats) : null;
+
+    if (!Number.isInteger(parsedTableNumber) || parsedTableNumber <= 0) {
+      setError('Ingresa un numero de mesa valido.');
+      return;
+    }
+    if (parsedSeats !== null && (!Number.isInteger(parsedSeats) || parsedSeats <= 0)) {
+      setError('Ingresa una cantidad de lugares valida.');
+      return;
+    }
+    if (tables.some((table) => table.table_number === parsedTableNumber)) {
+      setError('Ya existe una mesa con ese numero.');
+      return;
+    }
+
+    setError('');
+    onCreate(parsedTableNumber, parsedSeats);
+    setTableNumber('');
+    setSeats('');
+  }
+
+  return (
+    <section className="rounded-lg border border-gray-200 bg-white p-4">
+      <div className="mb-4 flex flex-col gap-1">
+        <h2 className="text-xl font-bold text-gray-800">Mesas del restaurante</h2>
+        <p className="text-sm text-gray-600">Configura las mesas disponibles para registrar pedidos del salon.</p>
+      </div>
+
+      <form onSubmit={handleSubmit} className="mb-5 grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 sm:grid-cols-[160px_160px_auto]">
+        <input
+          type="number"
+          min="1"
+          step="1"
+          value={tableNumber}
+          onChange={(event) => setTableNumber(event.target.value)}
+          placeholder="Numero de mesa"
+          className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
+        />
+        <input
+          type="number"
+          min="1"
+          step="1"
+          value={seats}
+          onChange={(event) => setSeats(event.target.value)}
+          placeholder="Lugares"
+          className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
+        />
+        <button type="submit" className="inline-flex items-center justify-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600">
+          <Plus className="h-4 w-4" />
+          Agregar mesa
+        </button>
+        {error && <p className="text-sm text-red-700 sm:col-span-3">{error}</p>}
+      </form>
+
+      {tables.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-gray-300 py-10 text-center text-sm text-gray-500">Todavia no hay mesas configuradas.</div>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {tables.map((table) => (
+            <div key={table.id} className="rounded-lg border border-gray-200 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-lg font-bold text-gray-800">Mesa {table.table_number}</p>
+                  <p className="text-sm text-gray-500">{table.seats ? `${table.seats} lugares` : 'Sin lugares definidos'}</p>
+                </div>
+                <span className={`rounded-full px-2 py-1 text-xs font-medium ${table.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
+                  {table.is_active ? 'Disponible' : 'Inactiva'}
+                </span>
+              </div>
+              <div className="mt-4 flex gap-2">
+                <button type="button" onClick={() => onToggle(table)} className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                  {table.is_active ? 'Desactivar' : 'Activar'}
+                </button>
+                <button type="button" onClick={() => onDelete(table.id)} className="rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-100">
+                  Eliminar
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function toDateTimeInputValue(dateValue: string) {
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return '';
+
+  const timezoneOffset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - timezoneOffset).toISOString().slice(0, 16);
+}
+
+function ReservationSettings({
+  reservations,
+  tables,
+  editingReservation,
+  onEdit,
+  onCancelEdit,
+  onSave,
+  onUpdateStatus,
+  onDelete,
+}: {
+  reservations: RestaurantReservationWithTable[];
+  tables: RestaurantTable[];
+  editingReservation: RestaurantReservationWithTable | null;
+  onEdit: (reservation: RestaurantReservationWithTable) => void;
+  onCancelEdit: () => void;
+  onSave: (form: ReservationInput, reservationId?: string) => void;
+  onUpdateStatus: (reservationId: string, status: ReservationStatus) => void;
+  onDelete: (reservationId: string) => void;
+}) {
+  const activeTables = tables.filter((table) => table.is_active);
+  const [form, setForm] = useState<ReservationInput>({
+    customerName: '',
+    customerPhone: '',
+    customerEmail: '',
+    reservationAt: '',
+    partySize: '',
+    tableId: '',
+    status: 'pending',
+    notes: '',
+  });
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!editingReservation) {
+      setForm({
+        customerName: '',
+        customerPhone: '',
+        customerEmail: '',
+        reservationAt: '',
+        partySize: '',
+        tableId: '',
+        status: 'pending',
+        notes: '',
+      });
+      setError('');
+      return;
+    }
+
+    setForm({
+      customerName: editingReservation.customer_name,
+      customerPhone: editingReservation.customer_phone || '',
+      customerEmail: editingReservation.customer_email || '',
+      reservationAt: toDateTimeInputValue(editingReservation.reservation_at),
+      partySize: editingReservation.party_size?.toString() || '',
+      tableId: editingReservation.table_id || '',
+      status: editingReservation.status,
+      notes: editingReservation.notes || '',
+    });
+    setError('');
+  }, [editingReservation]);
+
+  function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const parsedPartySize = form.partySize ? Number(form.partySize) : null;
+
+    if (!form.customerName.trim()) {
+      setError('Ingresa el nombre del cliente.');
+      return;
+    }
+    if (!form.reservationAt || Number.isNaN(new Date(form.reservationAt).getTime())) {
+      setError('Ingresa una fecha y hora valida.');
+      return;
+    }
+    if (parsedPartySize !== null && (!Number.isInteger(parsedPartySize) || parsedPartySize <= 0)) {
+      setError('Ingresa una cantidad de ocupantes valida.');
+      return;
+    }
+
+    setError('');
+    onSave(form, editingReservation?.id);
+    if (!editingReservation) {
+      setForm({
+        customerName: '',
+        customerPhone: '',
+        customerEmail: '',
+        reservationAt: '',
+        partySize: '',
+        tableId: '',
+        status: 'pending',
+        notes: '',
+      });
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-gray-200 bg-white p-4">
+      <div className="mb-4 flex flex-col gap-1">
+        <h2 className="text-xl font-bold text-gray-800">Reservas de mesas</h2>
+        <p className="text-sm text-gray-600">Registra reservas con cliente, fecha, ocupantes opcionales y mesa asignada.</p>
+      </div>
+
+      <form onSubmit={handleSubmit} className="mb-5 grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 lg:grid-cols-4">
+        <input required value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} placeholder="Cliente" className="rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+        <input type="datetime-local" required value={form.reservationAt} onChange={(event) => setForm({ ...form, reservationAt: event.target.value })} className="rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+        <input type="number" min="1" step="1" value={form.partySize} onChange={(event) => setForm({ ...form, partySize: event.target.value })} placeholder="Ocupantes (opcional)" className="rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+        <select value={form.tableId} onChange={(event) => setForm({ ...form, tableId: event.target.value })} className="rounded-lg border border-gray-300 px-3 py-2 text-sm">
+          <option value="">Sin mesa asignada</option>
+          {activeTables.map((table) => (
+            <option key={table.id} value={table.id}>
+              Mesa {table.table_number}{table.seats ? ` - ${table.seats} lugares` : ''}
+            </option>
+          ))}
+        </select>
+        <input value={form.customerPhone} onChange={(event) => setForm({ ...form, customerPhone: event.target.value })} placeholder="Telefono (opcional)" className="rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+        <input type="email" value={form.customerEmail} onChange={(event) => setForm({ ...form, customerEmail: event.target.value })} placeholder="Email (opcional)" className="rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+        <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as ReservationStatus })} className="rounded-lg border border-gray-300 px-3 py-2 text-sm">
+          {Object.entries(reservationStatusLabels).map(([value, label]) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
+        </select>
+        <textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder="Notas (opcional)" rows={1} className="rounded-lg border border-gray-300 px-3 py-2 text-sm lg:col-span-4" />
+        {error && <p className="text-sm text-red-700 lg:col-span-4">{error}</p>}
+        <div className="flex flex-col gap-2 sm:flex-row lg:col-span-4">
+          <button type="submit" className="inline-flex items-center justify-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600">
+            <Plus className="h-4 w-4" />
+            {editingReservation ? 'Guardar reserva' : 'Agregar reserva'}
+          </button>
+          {editingReservation && (
+            <button type="button" onClick={onCancelEdit} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-white">
+              Cancelar edicion
+            </button>
+          )}
+        </div>
+      </form>
+
+      {reservations.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-gray-300 py-10 text-center text-sm text-gray-500">Todavia no hay reservas cargadas.</div>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-gray-200">
+          <table className="min-w-[980px] divide-y divide-gray-200 text-sm">
+            <thead className="bg-gray-50 text-left text-xs font-semibold uppercase text-gray-500">
+              <tr>
+                <th className="px-3 py-3">Fecha</th>
+                <th className="px-3 py-3">Cliente</th>
+                <th className="px-3 py-3">Contacto</th>
+                <th className="px-3 py-3">Ocupantes</th>
+                <th className="px-3 py-3">Mesa</th>
+                <th className="px-3 py-3">Estado</th>
+                <th className="px-3 py-3">Notas</th>
+                <th className="px-3 py-3 text-right">Acciones</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 bg-white">
+              {reservations.map((reservation) => (
+                <tr key={reservation.id} className="align-middle hover:bg-gray-50">
+                  <td className="whitespace-nowrap px-3 py-3 text-gray-700">{new Date(reservation.reservation_at).toLocaleString()}</td>
+                  <td className="px-3 py-3 font-semibold text-gray-800">{reservation.customer_name}</td>
+                  <td className="whitespace-nowrap px-3 py-3 text-gray-600">
+                    {[reservation.customer_phone, reservation.customer_email].filter(Boolean).join(' - ') || 'Sin contacto'}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-3 text-gray-600">
+                    {reservation.party_size ? `${reservation.party_size} ocupantes` : 'Sin definir'}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-3 text-gray-600">
+                    {reservation.table?.table_number ? `Mesa ${reservation.table.table_number}` : 'Sin mesa'}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-3">
+                    <div className="flex items-center gap-2">
+                      <span className={`inline-flex shrink-0 rounded-full px-2 py-1 text-xs font-medium ${reservationStatusColors[reservation.status]}`}>
+                        {reservationStatusLabels[reservation.status]}
+                      </span>
+                      <select value={reservation.status} onChange={(event) => onUpdateStatus(reservation.id, event.target.value as ReservationStatus)} className="w-36 shrink-0 rounded-lg border border-gray-300 px-2 py-1.5 text-sm text-gray-700">
+                        {Object.entries(reservationStatusLabels).map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </td>
+                  <td className="max-w-[220px] px-3 py-3 text-gray-600">
+                    {reservation.notes || 'Sin notas'}
+                  </td>
+                  <td className="px-3 py-3">
+                    <div className="flex justify-end gap-2">
+                      <button type="button" onClick={() => onEdit(reservation)} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-white">
+                        <Edit2 className="h-4 w-4" />
+                        Editar
+                      </button>
+                      <button type="button" onClick={() => onDelete(reservation.id)} className="rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-100">
+                        Eliminar
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function RestaurantOrderForm({
   restaurant,
   menuItems,
+  tables,
+  tableOrders,
   onClose,
   onCreated,
 }: {
   restaurant: Restaurant;
   menuItems: MenuItem[];
+  tables: RestaurantTable[];
+  tableOrders: RestaurantOrder[];
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -1581,6 +2465,7 @@ function RestaurantOrderForm({
   };
 
   const availableItems = menuItems.filter((item) => item.is_available);
+  const activeTables = tables.filter((table) => table.is_active);
   const [customer, setCustomer] = useState({ id: '', fullName: '', email: '', phone: '' });
   const [matchedCustomer, setMatchedCustomer] = useState(false);
   const [searchingCustomer, setSearchingCustomer] = useState(false);
@@ -1588,8 +2473,9 @@ function RestaurantOrderForm({
   const [showCustomerModal, setShowCustomerModal] = useState(false);
   const [customerFilter, setCustomerFilter] = useState('');
   const [registeredCustomers, setRegisteredCustomers] = useState<SelectableCustomer[]>([]);
-  const [deliveryMethod, setDeliveryMethod] = useState<'delivery' | 'pickup'>('delivery');
+  const [deliveryMethod, setDeliveryMethod] = useState<'delivery' | 'pickup' | 'dine_in'>('delivery');
   const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [diningTableId, setDiningTableId] = useState('');
   const [customerNotes, setCustomerNotes] = useState('');
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
@@ -1667,6 +2553,29 @@ function RestaurantOrderForm({
       setError('Selecciona al menos un producto.');
       return;
     }
+    if (deliveryMethod === 'dine_in' && !diningTableId) {
+      setError('Selecciona una mesa.');
+      return;
+    }
+
+    const activeTableOrder = deliveryMethod === 'dine_in'
+      ? tableOrders.find((order) =>
+          order.delivery_method === 'dine_in'
+          && order.dining_table_id === diningTableId
+          && order.status !== 'closed'
+          && order.status !== 'cancelled'
+        ) || null
+      : null;
+    const existingQuantities = new Map<string, number>();
+    for (const item of activeTableOrder?.order_items || []) {
+      existingQuantities.set(item.menu_item_id, (existingQuantities.get(item.menu_item_id) || 0) + item.quantity);
+    }
+    for (const item of items) {
+      existingQuantities.set(item.menuItemId, (existingQuantities.get(item.menuItemId) || 0) + item.quantity);
+    }
+    const itemsToSave = activeTableOrder
+      ? [...existingQuantities.entries()].map(([menuItemId, quantity]) => ({ menuItemId, quantity }))
+      : items;
 
     let addressToSave = deliveryAddress.trim();
     if (deliveryMethod === 'delivery') {
@@ -1677,16 +2586,25 @@ function RestaurantOrderForm({
     setLoading(true);
     setError('');
     const { data, error: invokeError } = await supabase.functions.invoke('restaurant-orders', {
-      body: {
-        restaurantId: restaurant.id,
-        customer,
-        deliveryMethod,
-        deliveryAddress: addressToSave,
-        latitude: null,
-        longitude: null,
-        customerNotes,
-        items,
-      },
+      body: activeTableOrder
+        ? {
+            action: 'updateTableOrder',
+            restaurantId: restaurant.id,
+            orderId: activeTableOrder.id,
+            customerNotes: customerNotes || activeTableOrder.customer_notes || '',
+            items: itemsToSave,
+          }
+        : {
+            restaurantId: restaurant.id,
+            customer,
+            deliveryMethod,
+            diningTableId: deliveryMethod === 'dine_in' ? diningTableId : null,
+            deliveryAddress: addressToSave,
+            latitude: null,
+            longitude: null,
+            customerNotes,
+            items: itemsToSave,
+          },
     });
     setLoading(false);
 
@@ -1697,9 +2615,13 @@ function RestaurantOrderForm({
 
     setCreatedOrderTicket({
       orderId: data.orderId,
-      customerName: customer.fullName.trim(),
-      deliveryAddress: deliveryMethod === 'delivery' ? addressToSave : restaurant.address || 'Retira en el restaurante',
-      totalAmount: total,
+      customerName: customer.fullName.trim() || (deliveryMethod === 'dine_in' ? 'Pedido de mesa' : 'Cliente ocasional'),
+      deliveryAddress: deliveryMethod === 'delivery'
+        ? addressToSave
+        : deliveryMethod === 'dine_in'
+          ? `Mesa ${tables.find((table) => table.id === diningTableId)?.table_number || ''}`
+          : restaurant.address || 'Retira en el restaurante',
+      totalAmount: activeTableOrder ? Number(data.totalAmount || total) : total,
       items: items.map((item) => ({
         name: availableItems.find((menuItem) => menuItem.id === item.menuItemId)?.name || 'Producto',
         quantity: item.quantity,
@@ -1741,7 +2663,7 @@ function RestaurantOrderForm({
                 <Search className="h-4 w-4" />
                 {searchingCustomer ? 'Cargando clientes...' : 'Buscar cliente registrado'}
               </button>
-              <input required type="text" placeholder="Nombre y apellido" value={customer.fullName} readOnly={matchedCustomer} onChange={(e) => setCustomer({ ...customer, fullName: e.target.value })} className="min-w-0 rounded-lg border border-gray-300 px-3 py-2 focus:ring-2 focus:ring-orange-500 read-only:bg-gray-100" />
+              <input required={deliveryMethod !== 'dine_in'} type="text" placeholder={deliveryMethod === 'dine_in' ? 'Nombre opcional' : 'Nombre y apellido'} value={customer.fullName} readOnly={matchedCustomer} onChange={(e) => setCustomer({ ...customer, fullName: e.target.value })} className="min-w-0 rounded-lg border border-gray-300 px-3 py-2 focus:ring-2 focus:ring-orange-500 read-only:bg-gray-100" />
               {matchedCustomer && <button type="button" onClick={clearSelectedCustomer} className="col-span-2 justify-self-start rounded-lg border border-gray-300 px-4 py-2 text-gray-600 hover:bg-gray-50">Quitar seleccion</button>}
             </div>
             {matchedCustomer && <input type="tel" value={customer.phone} readOnly placeholder="Sin telefono registrado" className="rounded-lg border border-gray-300 bg-gray-100 px-3 py-2 text-gray-600" />}
@@ -1769,15 +2691,28 @@ function RestaurantOrderForm({
           </section>
 
           <section className="grid gap-3 rounded-lg border border-gray-200 p-4 sm:grid-cols-2">
-            <h3 className="font-semibold text-gray-800 sm:col-span-2">Entrega</h3>
-            <select value={deliveryMethod} onChange={(e) => setDeliveryMethod(e.target.value as 'delivery' | 'pickup')} className="rounded-lg border border-gray-300 px-3 py-2">
+            <h3 className="font-semibold text-gray-800 sm:col-span-2">Tipo de pedido</h3>
+            <select value={deliveryMethod} onChange={(e) => setDeliveryMethod(e.target.value as 'delivery' | 'pickup' | 'dine_in')} className="rounded-lg border border-gray-300 px-3 py-2">
               <option value="delivery">Entrega a domicilio</option>
               <option value="pickup">Retira en el restaurante</option>
+              <option value="dine_in">Mesa en el local</option>
             </select>
             {deliveryMethod === 'delivery' ? (
               <input required type="text" placeholder="Direccion de entrega" value={deliveryAddress} onChange={(e) => setDeliveryAddress(e.target.value)} className="rounded-lg border border-gray-300 px-3 py-2" />
+            ) : deliveryMethod === 'dine_in' ? (
+              <select required value={diningTableId} onChange={(e) => setDiningTableId(e.target.value)} className="rounded-lg border border-gray-300 px-3 py-2">
+                <option value="">Seleccionar mesa</option>
+                {activeTables.map((table) => (
+                  <option key={table.id} value={table.id}>
+                    Mesa {table.table_number}{table.seats ? ` - ${table.seats} lugares` : ''}
+                  </option>
+                ))}
+              </select>
             ) : (
               <div className="rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800">{restaurant.address || 'Retira en el restaurante'}</div>
+            )}
+            {deliveryMethod === 'dine_in' && activeTables.length === 0 && (
+              <p className="text-sm text-red-700 sm:col-span-2">No hay mesas activas. Configuralas desde la seccion Mesas.</p>
             )}
             <textarea placeholder="Notas del pedido" rows={2} value={customerNotes} onChange={(e) => setCustomerNotes(e.target.value)} className="rounded-lg border border-gray-300 px-3 py-2 sm:col-span-2" />
           </section>
@@ -1788,7 +2723,7 @@ function RestaurantOrderForm({
             <p className="text-lg font-bold text-gray-800">Total: {moneyFormatter.format(total)}</p>
             <div className="flex gap-3">
               <button type="button" onClick={onClose} className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50">Cancelar</button>
-              <button type="submit" disabled={loading || geoLoading || availableItems.length === 0} className="rounded-lg bg-orange-500 px-4 py-2 font-semibold text-white hover:bg-orange-600 disabled:opacity-50">
+              <button type="submit" disabled={loading || geoLoading || availableItems.length === 0 || (deliveryMethod === 'dine_in' && activeTables.length === 0)} className="rounded-lg bg-orange-500 px-4 py-2 font-semibold text-white hover:bg-orange-600 disabled:opacity-50">
                 {geoLoading ? 'Ubicando...' : loading ? 'Creando...' : 'Crear pedido'}
               </button>
             </div>

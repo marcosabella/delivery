@@ -3,7 +3,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-region, x-supabase-api-version",
 };
 
 function json(body: unknown, status = 200) {
@@ -20,6 +20,22 @@ function serviceHeaders(serviceRoleKey: string, prefer?: string) {
     apikey: serviceRoleKey,
     ...(prefer ? { Prefer: prefer } : {}),
   };
+}
+
+async function sendOrderNotification(supabaseUrl: string, anonKey: string, authorization: string, orderId: string) {
+  try {
+    await fetch(`${supabaseUrl}/functions/v1/send-order-notification`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: authorization,
+        apikey: anonKey,
+      },
+      body: JSON.stringify({ orderId }),
+    });
+  } catch {
+    // Notification delivery must not block order writes.
+  }
 }
 
 function parseOptionalCoordinate(value: unknown, min: number, max: number) {
@@ -57,7 +73,12 @@ Deno.serve(async (req: Request) => {
     const restaurantId = String(body.restaurantId || "");
     const requestedCustomerId = String(body.customer?.id || "").trim();
     const fullName = String(body.customer?.fullName || "").trim();
-    const deliveryMethod = body.deliveryMethod === "pickup" ? "pickup" : "delivery";
+    const deliveryMethod = body.deliveryMethod === "pickup"
+      ? "pickup"
+      : body.deliveryMethod === "dine_in"
+        ? "dine_in"
+        : "delivery";
+    const diningTableId = String(body.diningTableId || "").trim();
     const deliveryAddress = String(body.deliveryAddress || "").trim();
     const latitude = parseOptionalCoordinate(body.latitude, -90, 90);
     const longitude = parseOptionalCoordinate(body.longitude, -180, 180);
@@ -70,13 +91,28 @@ Deno.serve(async (req: Request) => {
     }
 
     const restaurantResponse = await fetch(
-      `${supabaseUrl}/rest/v1/restaurants?id=eq.${encodeURIComponent(restaurantId)}&owner_id=eq.${caller.id}&select=id,address`,
+      `${supabaseUrl}/rest/v1/restaurants?id=eq.${encodeURIComponent(restaurantId)}&select=id,address,owner_id`,
       { headers: serviceHeaders(serviceRoleKey) },
     );
     const restaurants = restaurantResponse.ok ? await restaurantResponse.json() : [];
     if (!restaurants[0]) return json({ error: "Restaurant not found" }, 403);
 
+    const ownsRestaurant = restaurants[0].owner_id === caller.id;
+    let waitsRestaurant = false;
+    if (!ownsRestaurant) {
+      const waiterResponse = await fetch(
+        `${supabaseUrl}/rest/v1/restaurant_waiters?restaurant_id=eq.${encodeURIComponent(restaurantId)}&waiter_id=eq.${caller.id}&is_active=eq.true&select=waiter_id&limit=1`,
+        { headers: serviceHeaders(serviceRoleKey) },
+      );
+      const waiterAssignments = waiterResponse.ok ? await waiterResponse.json() : [];
+      waitsRestaurant = Boolean(waiterAssignments[0]);
+    }
+
+    if (!ownsRestaurant && !waitsRestaurant) return json({ error: "Restaurant access denied" }, 403);
+
     if (body.action === "listCustomers") {
+      if (!ownsRestaurant) return json({ error: "Restaurant owner access required" }, 403);
+
       const profileResponse = await fetch(
         `${supabaseUrl}/rest/v1/profiles?role=eq.customer&select=id,email,full_name,phone,delivery_address&order=full_name.asc&limit=500`,
         { headers: serviceHeaders(serviceRoleKey) },
@@ -97,11 +133,127 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    if (!fullName || requestedItems.length === 0) {
+    if (body.action === "updateTableOrder") {
+      const orderId = String(body.orderId || "").trim();
+      if (!orderId || requestedItems.length === 0) {
+        return json({ error: "Faltan datos obligatorios del pedido" }, 400);
+      }
+
+      const orderResponse = await fetch(
+        `${supabaseUrl}/rest/v1/orders?id=eq.${encodeURIComponent(orderId)}&restaurant_id=eq.${encodeURIComponent(restaurantId)}&delivery_method=eq.dine_in&select=id,dining_table_id,status&limit=1`,
+        { headers: serviceHeaders(serviceRoleKey) },
+      );
+      const existingOrders = orderResponse.ok ? await orderResponse.json() : [];
+      const existingOrder = existingOrders[0];
+      if (!existingOrder) return json({ error: "Pedido de mesa no encontrado" }, 404);
+      if (existingOrder.status === "closed" || existingOrder.status === "cancelled") {
+        return json({ error: "No se puede editar un pedido cerrado" }, 400);
+      }
+
+      const quantities = new Map<string, number>();
+      for (const item of requestedItems) {
+        const menuItemId = String(item.menuItemId || "");
+        const quantity = Number(item.quantity);
+        if (!menuItemId || !Number.isInteger(quantity) || quantity <= 0) {
+          return json({ error: "Hay productos o cantidades invalidas" }, 400);
+        }
+        quantities.set(menuItemId, (quantities.get(menuItemId) || 0) + quantity);
+      }
+
+      const idsFilter = [...quantities.keys()].map(encodeURIComponent).join(",");
+      const menuResponse = await fetch(
+        `${supabaseUrl}/rest/v1/menu_items?restaurant_id=eq.${encodeURIComponent(restaurantId)}&id=in.(${idsFilter})&is_available=eq.true&select=id,price`,
+        { headers: serviceHeaders(serviceRoleKey) },
+      );
+      const menuItems = menuResponse.ok ? await menuResponse.json() : [];
+      if (menuItems.length !== quantities.size) {
+        return json({ error: "Uno o mas productos no estan disponibles" }, 400);
+      }
+
+      const orderItems = menuItems.map((item: { id: string; price: number | string }) => {
+        const quantity = quantities.get(item.id)!;
+        const unitPrice = Number(item.price);
+        return { order_id: orderId, menu_item_id: item.id, quantity, unit_price: unitPrice, subtotal: unitPrice * quantity };
+      });
+      const totalAmount = orderItems.reduce((total: number, item: { subtotal: number }) => total + item.subtotal, 0);
+
+      const deleteItemsResponse = await fetch(
+        `${supabaseUrl}/rest/v1/order_items?order_id=eq.${encodeURIComponent(orderId)}`,
+        { method: "DELETE", headers: serviceHeaders(serviceRoleKey, "return=minimal") },
+      );
+      if (!deleteItemsResponse.ok) throw new Error("No se pudo actualizar el detalle del pedido");
+
+      const insertItemsResponse = await fetch(`${supabaseUrl}/rest/v1/order_items`, {
+        method: "POST",
+        headers: serviceHeaders(serviceRoleKey, "return=minimal"),
+        body: JSON.stringify(orderItems),
+      });
+      if (!insertItemsResponse.ok) throw new Error("No se pudo guardar el detalle del pedido");
+
+      const updateOrderResponse = await fetch(`${supabaseUrl}/rest/v1/orders?id=eq.${encodeURIComponent(orderId)}`, {
+        method: "PATCH",
+        headers: serviceHeaders(serviceRoleKey, "return=minimal"),
+        body: JSON.stringify({
+          status: existingOrder.status === "delivered" ? "pending" : existingOrder.status,
+          total_amount: totalAmount,
+          customer_notes: customerNotes,
+          ...(waitsRestaurant ? { waiter_id: caller.id } : {}),
+          updated_at: new Date().toISOString(),
+        }),
+      });
+      if (!updateOrderResponse.ok) throw new Error("No se pudo actualizar el pedido");
+      await sendOrderNotification(supabaseUrl, anonKey, authorization, orderId);
+
+      return json({ orderId, totalAmount });
+    }
+
+    if (body.action === "closeTableOrder") {
+      const orderId = String(body.orderId || "").trim();
+      if (!orderId) return json({ error: "Faltan datos obligatorios del pedido" }, 400);
+
+      const orderResponse = await fetch(
+        `${supabaseUrl}/rest/v1/orders?id=eq.${encodeURIComponent(orderId)}&restaurant_id=eq.${encodeURIComponent(restaurantId)}&delivery_method=eq.dine_in&select=id,status&limit=1`,
+        { headers: serviceHeaders(serviceRoleKey) },
+      );
+      const existingOrders = orderResponse.ok ? await orderResponse.json() : [];
+      const existingOrder = existingOrders[0];
+      if (!existingOrder) return json({ error: "Pedido de mesa no encontrado" }, 404);
+      if (existingOrder.status !== "delivered") {
+        return json({ error: "La mesa solo se puede cerrar cuando el pedido esta entregado" }, 400);
+      }
+
+      const closeOrderResponse = await fetch(`${supabaseUrl}/rest/v1/orders?id=eq.${encodeURIComponent(orderId)}`, {
+        method: "PATCH",
+        headers: serviceHeaders(serviceRoleKey, "return=minimal"),
+        body: JSON.stringify({
+          status: "closed",
+          updated_at: new Date().toISOString(),
+        }),
+      });
+      if (!closeOrderResponse.ok) throw new Error("No se pudo cerrar la mesa");
+      await sendOrderNotification(supabaseUrl, anonKey, authorization, orderId);
+
+      return json({ orderId, status: "closed" });
+    }
+
+    if ((deliveryMethod !== "dine_in" && !fullName) || requestedItems.length === 0) {
       return json({ error: "Faltan datos obligatorios del pedido" }, 400);
     }
     if (deliveryMethod === "delivery" && !deliveryAddress) {
       return json({ error: "La direccion de entrega es obligatoria" }, 400);
+    }
+    if (deliveryMethod === "dine_in" && !diningTableId) {
+      return json({ error: "Selecciona una mesa" }, 400);
+    }
+
+    let diningTables: Array<{ id: string; table_number: number }> = [];
+    if (deliveryMethod === "dine_in") {
+      const tableResponse = await fetch(
+        `${supabaseUrl}/rest/v1/restaurant_tables?id=eq.${encodeURIComponent(diningTableId)}&restaurant_id=eq.${encodeURIComponent(restaurantId)}&is_active=eq.true&select=id,table_number&limit=1`,
+        { headers: serviceHeaders(serviceRoleKey) },
+      );
+      diningTables = tableResponse.ok ? await tableResponse.json() : [];
+      if (!diningTables[0]) return json({ error: "La mesa seleccionada no esta disponible" }, 400);
     }
 
     const quantities = new Map<string, number>();
@@ -146,7 +298,9 @@ Deno.serve(async (req: Request) => {
     const totalAmount = orderItems.reduce((total: number, item: { subtotal: number }) => total + item.subtotal, 0);
     const address = deliveryMethod === "pickup"
       ? String(restaurants[0].address || "Retira en restaurante")
-      : deliveryAddress;
+      : deliveryMethod === "dine_in"
+        ? `Mesa ${diningTables[0].table_number}`
+        : deliveryAddress;
 
     const orderResponse = await fetch(`${supabaseUrl}/rest/v1/orders`, {
       method: "POST",
@@ -158,6 +312,8 @@ Deno.serve(async (req: Request) => {
         status: "pending",
         total_amount: totalAmount,
         delivery_method: deliveryMethod,
+        dining_table_id: deliveryMethod === "dine_in" ? diningTableId : null,
+        waiter_id: deliveryMethod === "dine_in" && waitsRestaurant ? caller.id : null,
         delivery_address: address,
         latitude: hasCoordinates ? latitude : null,
         longitude: hasCoordinates ? longitude : null,
@@ -174,6 +330,7 @@ Deno.serve(async (req: Request) => {
       body: JSON.stringify(orderItems.map((item: Record<string, unknown>) => ({ ...item, order_id: createdOrderId }))),
     });
     if (!itemsResponse.ok) throw new Error("No se pudo guardar el detalle del pedido");
+    if (customerId) await sendOrderNotification(supabaseUrl, anonKey, authorization, createdOrderId);
 
     return json({ orderId: createdOrderId, customerAssociated: Boolean(customerId) }, 201);
   } catch (error) {

@@ -4,6 +4,7 @@ import {
   ArrowRight,
   ChevronDown,
   Clock3,
+  BellRing,
   Filter,
   KeyRound,
   LogOut,
@@ -21,6 +22,7 @@ import { supabase, DishCategory, MenuItem, Order, Profile, Restaurant } from '..
 import { useAuth } from '../contexts/AuthContext';
 import { useGeolocation } from '../hooks/useGeolocation';
 import { Auth } from './Auth';
+import { customerOrderStatusLabels, getCustomerOrderStatusMessage, getOrderNotificationPermissionState, OrderNotificationPermissionState, requestOrderNotificationPermission, shouldNotifyCustomerOrderStatus, showOrderBrowserNotification } from '../lib/orderStatusNotifications';
 
 type CartItem = MenuItem & { quantity: number };
 type AccountView = 'cart' | 'orders' | 'profile';
@@ -60,8 +62,11 @@ export function Landing() {
   const [deliveryAddress, setDeliveryAddress] = useState(profile?.delivery_address || '');
   const [deliveryLocation, setDeliveryLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [message, setMessage] = useState('');
+  const [statusNotification, setStatusNotification] = useState<{ orderId: string; message: string } | null>(null);
   const profileMenuRef = useRef<HTMLDivElement>(null);
   const categoryCarouselRef = useRef<HTMLDivElement>(null);
+  const knownOrderStatusesRef = useRef<Map<string, Order['status']>>(new Map());
+  const hasLoadedOrdersRef = useRef(false);
 
   function scrollCategories(direction: -1 | 1) {
     categoryCarouselRef.current?.scrollBy({
@@ -108,6 +113,30 @@ export function Landing() {
     if (profile?.delivery_address) setDeliveryAddress(profile.delivery_address);
   }, [profile?.delivery_address]);
 
+  useEffect(() => {
+    if (!profile?.id) {
+      setOrders([]);
+      knownOrderStatusesRef.current = new Map();
+      hasLoadedOrdersRef.current = false;
+      return;
+    }
+
+    void loadOrders();
+
+    const channel = supabase
+      .channel(`landing-customer-orders-${profile.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders', filter: `customer_id=eq.${profile.id}` }, () => void loadOrders())
+      .subscribe();
+
+    return () => { void supabase.removeChannel(channel); };
+  }, [profile?.id]);
+
+  useEffect(() => {
+    if (!statusNotification) return;
+    const timeoutId = window.setTimeout(() => setStatusNotification(null), 7000);
+    return () => window.clearTimeout(timeoutId);
+  }, [statusNotification]);
+
   async function loadOrders() {
     if (!profile) return;
     const { data } = await supabase
@@ -115,10 +144,29 @@ export function Landing() {
       .select('*')
       .eq('customer_id', profile.id)
       .order('created_at', { ascending: false });
-    setOrders(data || []);
+
+    const loadedOrders = (data || []) as Order[];
+    const previousStatuses = knownOrderStatusesRef.current;
+    const isRefreshAfterInitialLoad = hasLoadedOrdersRef.current;
+    const changedOrder = loadedOrders.find((order) => {
+      const previousStatus = previousStatuses.get(order.id);
+      return previousStatus && previousStatus !== order.status && shouldNotifyCustomerOrderStatus(order.status);
+    });
+
+    knownOrderStatusesRef.current = new Map(loadedOrders.map((order) => [order.id, order.status]));
+    hasLoadedOrdersRef.current = true;
+
+    if (isRefreshAfterInitialLoad && changedOrder) {
+      const statusMessage = getCustomerOrderStatusMessage(changedOrder);
+      setStatusNotification({ orderId: changedOrder.id, message: statusMessage });
+      showOrderBrowserNotification(changedOrder);
+    }
+
+    setOrders(loadedOrders);
   }
 
   async function openOrders() {
+    await requestOrderNotificationPermission();
     await loadOrders();
     setAccountView('orders');
     setMobileMenu(false);
@@ -278,6 +326,18 @@ export function Landing() {
 
   return (
     <div className="min-h-screen bg-[#fffaf7] text-slate-900">
+      {statusNotification && (
+        <div className="fixed right-3 top-20 z-50 flex max-w-sm items-start gap-3 rounded-xl border border-orange-200 bg-white p-4 shadow-xl sm:right-5">
+          <Clock3 className="mt-0.5 h-5 w-5 shrink-0 text-orange-500" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-slate-900">Actualizacion de pedido</p>
+            <p className="mt-1 text-sm text-slate-600">{statusNotification.message}</p>
+          </div>
+          <button type="button" onClick={() => setStatusNotification(null)} className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Cerrar notificacion">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
       <header className="sticky top-0 z-40 border-b border-orange-100 bg-white/95 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
           <a href="#inicio" onClick={() => { setAccountView(null); setSelectedRestaurant(null); }} className="flex items-center gap-2 font-bold text-slate-900">
@@ -479,12 +539,7 @@ function RestaurantView({ restaurant, items, onBack, onAddToCart }: RestaurantVi
 }
 
 const orderStatusLabels: Record<Order['status'], string> = {
-  pending: 'Pendiente',
-  confirmed: 'Confirmado',
-  preparing: 'Preparando',
-  delivering: 'En camino',
-  delivered: 'Entregado',
-  cancelled: 'Cancelado',
+  ...customerOrderStatusLabels,
 };
 
 interface CartViewProps {
@@ -663,6 +718,7 @@ function ProfileView({ profile, onSaved, onBack }: { profile: Profile; onSaved: 
   const [fullName, setFullName] = useState(profile.full_name || '');
   const [phone, setPhone] = useState(profile.phone || '');
   const [address, setAddress] = useState(profile.delivery_address || '');
+  const [notificationPermission, setNotificationPermission] = useState<OrderNotificationPermissionState>(() => getOrderNotificationPermissionState());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
@@ -671,6 +727,44 @@ function ProfileView({ profile, onSaved, onBack }: { profile: Profile; onSaved: 
   const [changingPassword, setChangingPassword] = useState(false);
   const [passwordError, setPasswordError] = useState('');
   const [passwordChanged, setPasswordChanged] = useState(false);
+
+  async function handleNotificationPermission() {
+    const permission = await requestOrderNotificationPermission();
+    setNotificationPermission(permission);
+  }
+
+  const notificationStatus = {
+    granted: {
+      label: 'Activadas',
+      description: 'Vas a recibir avisos cuando cambie el estado de tus pedidos.',
+      className: 'bg-emerald-50 text-emerald-700',
+      button: 'Notificaciones activadas',
+      disabled: true,
+    },
+    default: {
+      label: 'Pendientes',
+      description: 'Activalas para recibir avisos del estado de tus pedidos en este dispositivo.',
+      className: 'bg-orange-50 text-orange-700',
+      button: 'Activar notificaciones',
+      disabled: false,
+    },
+    denied: {
+      label: 'Bloqueadas',
+      description: 'El navegador las tiene bloqueadas. Habilitalas desde los permisos del sitio.',
+      className: 'bg-red-50 text-red-700',
+      button: 'Permiso bloqueado',
+      disabled: true,
+    },
+    unsupported: {
+      label: 'No disponibles',
+      description: 'Este navegador no permite Push Web o falta configurar las claves de notificaciones.',
+      className: 'bg-slate-100 text-slate-600',
+      button: 'No disponible',
+      disabled: true,
+    },
+  } satisfies Record<OrderNotificationPermissionState, { label: string; description: string; className: string; button: string; disabled: boolean }>;
+
+  const currentNotificationStatus = notificationStatus[notificationPermission];
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -744,6 +838,28 @@ function ProfileView({ profile, onSaved, onBack }: { profile: Profile; onSaved: 
           <button disabled={saving} className="w-full rounded-xl bg-orange-500 py-3 font-bold text-white hover:bg-orange-600 disabled:opacity-50">{saving ? 'Guardando...' : 'Guardar cambios'}</button>
         </div>
       </form>
+      <div className="rounded-2xl bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-50 text-orange-600"><BellRing className="h-5 w-5" /></span>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-xl font-bold">Notificaciones de pedidos</h2>
+                <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${currentNotificationStatus.className}`}>{currentNotificationStatus.label}</span>
+              </div>
+              <p className="mt-1 text-sm text-slate-500">{currentNotificationStatus.description}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleNotificationPermission()}
+            disabled={currentNotificationStatus.disabled}
+            className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {currentNotificationStatus.button}
+          </button>
+        </div>
+      </div>
       <form onSubmit={handlePasswordChange} className="rounded-2xl bg-white p-6 shadow-sm">
         <div className="mb-5 flex items-center gap-3">
           <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-50 text-orange-600"><KeyRound className="h-5 w-5" /></span>

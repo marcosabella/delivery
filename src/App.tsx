@@ -2,6 +2,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { RestaurantDashboard } from './components/RestaurantDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
 import { DriverDashboard } from './components/DriverDashboard';
+import { WaiterDashboard } from './components/WaiterDashboard';
 import { Landing } from './components/Landing';
 
 function AppContent() {
@@ -62,6 +63,10 @@ function AppContent() {
 
   if (profile.role === 'driver') {
     return <DriverDashboard />;
+  }
+
+  if (profile.role === 'waiter') {
+    return <WaiterDashboard />;
   }
 
   return null;
