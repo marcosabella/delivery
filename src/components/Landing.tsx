@@ -26,7 +26,7 @@ import { Auth } from './Auth';
 import { customerOrderStatusLabels, getCustomerOrderStatusMessage, getOrderNotificationPermissionState, OrderNotificationPermissionState, requestOrderNotificationPermission, shouldNotifyCustomerOrderStatus, showOrderBrowserNotification } from '../lib/orderStatusNotifications';
 
 type CartItem = MenuItem & { quantity: number };
-type AccountView = 'cart' | 'orders' | 'profile';
+type AccountView = 'cart' | 'orders' | 'favorites' | 'profile';
 
 const CART_STORAGE_KEY = 'food-delivery-cart';
 const RESTAURANT_STORAGE_KEY = 'food-delivery-restaurant';
@@ -310,6 +310,12 @@ export function Landing() {
     );
     return `${restaurant.name} ${restaurant.description || ''}`.toLowerCase().includes(normalizedQuery) || hasMatchingDish;
   }).sort((a, b) => Number(favoriteRestaurantIds.has(b.id)) - Number(favoriteRestaurantIds.has(a.id)));
+  const favoriteRestaurants = restaurants
+    .filter((restaurant) => favoriteRestaurantIds.has(restaurant.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const favoriteMenuItems = menuItems
+    .filter((item) => favoriteMenuItemIds.has(item.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   function addToCart(item: MenuItem) {
     const restaurant = restaurantById.get(item.restaurant_id);
@@ -468,6 +474,7 @@ export function Landing() {
               </button>
               {profileMenu && <div className="absolute right-0 mt-2 w-56 overflow-hidden rounded-xl border border-slate-200 bg-white py-2 text-sm shadow-xl" role="menu">
                 <button onClick={() => openAccountView('cart')} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-slate-700 hover:bg-orange-50 hover:text-orange-600" role="menuitem"><ShoppingBag className="h-4 w-4" /> Mi carrito {cartCount > 0 && <span className="ml-auto font-semibold">{cartCount}</span>}</button>
+                <button onClick={() => openAccountView('favorites')} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-slate-700 hover:bg-orange-50 hover:text-orange-600" role="menuitem"><Heart className="h-4 w-4" /> Favoritos</button>
                 <button onClick={() => { void openOrders(); setProfileMenu(false); }} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-slate-700 hover:bg-orange-50 hover:text-orange-600" role="menuitem"><Clock3 className="h-4 w-4" /> Mis pedidos</button>
                 <button onClick={() => openAccountView('profile')} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-slate-700 hover:bg-orange-50 hover:text-orange-600" role="menuitem"><User className="h-4 w-4" /> Datos de mi perfil</button>
                 <div className="my-2 border-t border-slate-100" />
@@ -479,7 +486,7 @@ export function Landing() {
             <button onClick={() => setMobileMenu(!mobileMenu)} className="rounded-xl p-2.5 md:hidden" aria-label="Menu"><Menu className="h-5 w-5" /></button>
           </div>
         </div>
-        {mobileMenu && <div className="border-t bg-white px-4 py-4 md:hidden"><div className="flex flex-col gap-3 text-sm font-medium"><a href="#restaurantes" onClick={() => { setAccountView(null); setSelectedRestaurant(null); setMobileMenu(false); }}>Restaurantes</a><a href="#platos" onClick={() => { setAccountView(null); setSelectedRestaurant(null); setMobileMenu(false); }}>Platos</a>{user ? <details className="group"><summary className="flex cursor-pointer list-none items-center justify-between gap-2 py-1"><span className="truncate">{profileLabel}</span> <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" /></summary><div className="mt-2 flex flex-col gap-3 border-l-2 border-orange-100 pl-4"><button onClick={() => openAccountView('cart')} className="flex items-center gap-2 text-left"><ShoppingBag className="h-4 w-4" /> Mi carrito {cartCount > 0 && <span className="rounded-full bg-orange-500 px-1.5 text-xs text-white">{cartCount}</span>}</button><button onClick={openOrders} className="flex items-center gap-2 text-left"><Clock3 className="h-4 w-4" /> Mis pedidos</button><button onClick={() => openAccountView('profile')} className="flex items-center gap-2 text-left"><User className="h-4 w-4" /> Datos de mi perfil</button><button onClick={() => { setMobileMenu(false); void signOut(); }} className="flex items-center gap-2 text-left text-red-600"><LogOut className="h-4 w-4" /> Cerrar sesión</button></div></details> : <button onClick={() => setShowAuth(true)} className="text-left text-orange-600">Ingresar o registrarme</button>}</div></div>}
+        {mobileMenu && <div className="border-t bg-white px-4 py-4 md:hidden"><div className="flex flex-col gap-3 text-sm font-medium"><a href="#restaurantes" onClick={() => { setAccountView(null); setSelectedRestaurant(null); setMobileMenu(false); }}>Restaurantes</a><a href="#platos" onClick={() => { setAccountView(null); setSelectedRestaurant(null); setMobileMenu(false); }}>Platos</a>{user ? <details className="group"><summary className="flex cursor-pointer list-none items-center justify-between gap-2 py-1"><span className="truncate">{profileLabel}</span> <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" /></summary><div className="mt-2 flex flex-col gap-3 border-l-2 border-orange-100 pl-4"><button onClick={() => openAccountView('cart')} className="flex items-center gap-2 text-left"><ShoppingBag className="h-4 w-4" /> Mi carrito {cartCount > 0 && <span className="rounded-full bg-orange-500 px-1.5 text-xs text-white">{cartCount}</span>}</button><button onClick={() => openAccountView('favorites')} className="flex items-center gap-2 text-left"><Heart className="h-4 w-4" /> Favoritos</button><button onClick={openOrders} className="flex items-center gap-2 text-left"><Clock3 className="h-4 w-4" /> Mis pedidos</button><button onClick={() => openAccountView('profile')} className="flex items-center gap-2 text-left"><User className="h-4 w-4" /> Datos de mi perfil</button><button onClick={() => { setMobileMenu(false); void signOut(); }} className="flex items-center gap-2 text-left text-red-600"><LogOut className="h-4 w-4" /> Cerrar sesión</button></div></details> : <button onClick={() => setShowAuth(true)} className="text-left text-orange-600">Ingresar o registrarme</button>}</div></div>}
       </header>
 
       <main>
@@ -505,6 +512,17 @@ export function Landing() {
           />
         ) : accountView === 'orders' ? (
           <OrdersView orders={orders} onBack={() => setAccountView(null)} />
+        ) : accountView === 'favorites' ? (
+          <FavoritesView
+            restaurants={favoriteRestaurants}
+            menuItems={favoriteMenuItems}
+            restaurantById={restaurantById}
+            onBack={() => setAccountView(null)}
+            onOpenRestaurant={openRestaurant}
+            onAddToCart={addToCart}
+            onToggleRestaurant={(restaurantId) => void toggleFavoriteRestaurant(restaurantId)}
+            onToggleMenuItem={(menuItemId) => void toggleFavoriteMenuItem(menuItemId)}
+          />
         ) : accountView === 'profile' && profile ? (
           <ProfileView profile={profile} onBack={() => setAccountView(null)} onSaved={retryProfile} />
         ) : selectedRestaurant ? (
@@ -737,6 +755,91 @@ function CartView({ cart, restaurant, total, deliveryMethod, deliveryAddress, me
             <div className="my-5 flex justify-between border-t pt-4 text-lg font-bold"><span>Total</span><span>${total.toLocaleString('es-AR')}</span></div>
             <button disabled={submitting} onClick={() => void onCheckout()} className="w-full rounded-xl bg-orange-500 py-3 font-bold text-white hover:bg-orange-600 disabled:opacity-50">{submitting ? 'Confirmando...' : 'Confirmar pedido'}</button>
           </aside>
+        </div>
+      )}
+    </section>
+  );
+}
+
+interface FavoritesViewProps {
+  restaurants: Restaurant[];
+  menuItems: MenuItem[];
+  restaurantById: Map<string, Restaurant>;
+  onBack: () => void;
+  onOpenRestaurant: (restaurant: Restaurant) => void;
+  onAddToCart: (item: MenuItem) => void;
+  onToggleRestaurant: (restaurantId: string) => void;
+  onToggleMenuItem: (menuItemId: string) => void;
+}
+
+function FavoritesView({ restaurants, menuItems, restaurantById, onBack, onOpenRestaurant, onAddToCart, onToggleRestaurant, onToggleMenuItem }: FavoritesViewProps) {
+  const hasFavorites = restaurants.length > 0 || menuItems.length > 0;
+
+  return (
+    <section className="mx-auto min-h-[70vh] max-w-7xl px-4 py-10 sm:px-6">
+      <div className="mb-7 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="font-semibold text-orange-600">Mi perfil</p>
+          <h1 className="text-3xl font-bold">Favoritos</h1>
+          <p className="mt-1 text-slate-500">Restaurantes y platos que guardaste.</p>
+        </div>
+        <button onClick={onBack} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-white">Volver</button>
+      </div>
+
+      {!hasFavorites ? (
+        <div className="rounded-2xl bg-white py-20 text-center text-slate-400 shadow-sm">
+          <Heart className="mx-auto h-14 w-14" />
+          <p className="mt-3">Todavia no tenes favoritos.</p>
+        </div>
+      ) : (
+        <div className="space-y-10">
+          <div>
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="text-xl font-bold">Restaurantes favoritos</h2>
+              <span className="text-sm font-semibold text-slate-500">{restaurants.length}</span>
+            </div>
+            {restaurants.length === 0 ? (
+              <div className="rounded-2xl bg-white p-6 text-sm text-slate-500 shadow-sm">No guardaste restaurantes favoritos.</div>
+            ) : (
+              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                {restaurants.map((restaurant) => (
+                  <article key={restaurant.id} className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg">
+                    <div className="relative">
+                      <button type="button" onClick={() => onOpenRestaurant(restaurant)} className="block w-full text-left">
+                        <div className="h-36 bg-gradient-to-br from-orange-100 to-amber-50">{restaurant.image_url ? <img src={restaurant.image_url} alt={restaurant.name} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center"><Store className="h-12 w-12 text-orange-300" /></div>}</div>
+                        <div className="p-5"><h3 className="text-lg font-bold">{restaurant.name}</h3><p className="mt-1 line-clamp-2 text-sm text-slate-500">{restaurant.description || 'Conoce todos los platos disponibles.'}</p><div className="mt-4 flex items-center justify-between gap-3 text-xs text-slate-500"><span className="flex min-w-0 items-center gap-1"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{restaurant.address || 'Retiro y delivery'}</span></span><span className="shrink-0 rounded-full bg-green-50 px-2 py-1 font-semibold text-green-700">Ver menu</span></div></div>
+                      </button>
+                      <button type="button" onClick={() => onToggleRestaurant(restaurant.id)} className="absolute right-3 top-3 rounded-full bg-red-500 p-2 text-white shadow-sm transition hover:bg-red-600" aria-label="Quitar restaurante de favoritos" title="Quitar de favoritos">
+                        <Heart className="h-4 w-4 fill-current" />
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="text-xl font-bold">Productos favoritos</h2>
+              <span className="text-sm font-semibold text-slate-500">{menuItems.length}</span>
+            </div>
+            {menuItems.length === 0 ? (
+              <div className="rounded-2xl bg-white p-6 text-sm text-slate-500 shadow-sm">No guardaste productos favoritos.</div>
+            ) : (
+              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {menuItems.map((item) => {
+                  const restaurant = restaurantById.get(item.restaurant_id);
+                  return (
+                    <article key={item.id} className="group overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm hover:shadow-lg">
+                      <div className="relative h-40 overflow-hidden bg-slate-100">{item.image_url ? <img src={item.image_url} alt={item.name} className="h-full w-full object-cover transition duration-300 group-hover:scale-105" /> : <div className="flex h-full items-center justify-center"><UtensilsCrossed className="h-10 w-10 text-slate-300" /></div>}<button type="button" onClick={() => onToggleMenuItem(item.id)} className="absolute right-3 top-3 rounded-full bg-red-500 p-2 text-white shadow-sm transition hover:bg-red-600" aria-label="Quitar producto de favoritos" title="Quitar de favoritos"><Heart className="h-4 w-4 fill-current" /></button></div>
+                      <div className="p-4"><p className="text-xs font-semibold uppercase tracking-wide text-orange-600">{restaurant?.name}</p><h3 className="mt-1 font-bold">{item.name}</h3><p className="mt-1 line-clamp-2 min-h-10 text-sm text-slate-500">{item.description || item.category}</p><div className="mt-4 flex items-center justify-between gap-3"><span className="text-xl font-black">${Number(item.price).toLocaleString('es-AR')}</span><button onClick={() => onAddToCart(item)} className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600">Agregar</button></div></div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </section>
