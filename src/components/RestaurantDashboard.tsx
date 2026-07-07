@@ -2606,6 +2606,9 @@ function RestaurantOrderForm({
   const [diningTableId, setDiningTableId] = useState('');
   const [customerNotes, setCustomerNotes] = useState('');
   const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [showProductPicker, setShowProductPicker] = useState(false);
+  const [productSearchTerm, setProductSearchTerm] = useState('');
+  const [pickerQuantities, setPickerQuantities] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showSuccessMessage, setShowSuccessMessage] = useState(false);
@@ -2617,13 +2620,45 @@ function RestaurantOrderForm({
     items: Array<{ name: string; quantity: number; subtotal: number }>;
   } | null>(null);
 
-  const total = availableItems.reduce(
+  const selectedItems = availableItems.filter((item) => (quantities[item.id] || 0) > 0);
+  const total = selectedItems.reduce(
     (sum, item) => sum + item.price * (quantities[item.id] || 0),
     0,
   );
+  const normalizedProductSearchTerm = productSearchTerm.trim().toLocaleLowerCase('es');
+  const filteredProductOptions = availableItems.filter((item) => {
+    if (!normalizedProductSearchTerm) return true;
+
+    return item.name.toLocaleLowerCase('es').includes(normalizedProductSearchTerm)
+      || (item.description || '').toLocaleLowerCase('es').includes(normalizedProductSearchTerm)
+      || (item.category || '').toLocaleLowerCase('es').includes(normalizedProductSearchTerm);
+  });
 
   function setQuantity(itemId: string, value: number) {
-    setQuantities((current) => ({ ...current, [itemId]: Math.max(0, Math.floor(value || 0)) }));
+    setQuantities((current) => ({ ...current, [itemId]: Math.max(1, Math.floor(value || 1)) }));
+  }
+
+  function removeSelectedProduct(itemId: string) {
+    setQuantities((current) => {
+      const next = { ...current };
+      delete next[itemId];
+      return next;
+    });
+  }
+
+  function openProductPicker() {
+    setProductSearchTerm('');
+    setPickerQuantities({});
+    setShowProductPicker(true);
+  }
+
+  function addProductToOrder(itemId: string) {
+    const quantity = Math.max(1, Math.floor(pickerQuantities[itemId] || 1));
+    setQuantities((current) => ({ ...current, [itemId]: (current[itemId] || 0) + quantity }));
+    setShowProductPicker(false);
+    setProductSearchTerm('');
+    setPickerQuantities({});
+    setError('');
   }
 
   async function openCustomerModal() {
@@ -2800,18 +2835,33 @@ function RestaurantOrderForm({
           </section>
 
           <section className="rounded-lg border border-gray-200 p-4">
-            <h3 className="mb-3 font-semibold text-gray-800">Productos</h3>
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <h3 className="font-semibold text-gray-800">Productos</h3>
+              <button type="button" onClick={openProductPicker} disabled={availableItems.length === 0} className="inline-flex items-center justify-center gap-2 rounded-lg border border-orange-500 px-4 py-2 text-sm font-semibold text-orange-600 hover:bg-orange-50 disabled:cursor-not-allowed disabled:opacity-50">
+                <Plus className="h-4 w-4" />
+                Agregar producto
+              </button>
+            </div>
             {availableItems.length === 0 ? (
               <p className="text-sm text-gray-500">No hay productos disponibles.</p>
+            ) : selectedItems.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-gray-300 py-8 text-center text-sm text-gray-500">
+                No agregaste productos al pedido.
+              </div>
             ) : (
               <div className="space-y-2">
-                {availableItems.map((item) => (
+                {selectedItems.map((item) => (
                   <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg bg-gray-50 px-3 py-2">
                     <div className="min-w-0">
                       <p className="truncate text-sm font-medium text-gray-800">{item.name}</p>
-                      <p className="text-xs text-gray-500">{moneyFormatter.format(item.price)}</p>
+                      <p className="text-xs text-gray-500">{moneyFormatter.format(item.price)} c/u</p>
                     </div>
-                    <input type="number" min="0" step="1" value={quantities[item.id] || ''} onChange={(e) => setQuantity(item.id, Number(e.target.value))} className="w-20 rounded-md border border-gray-300 px-2 py-1 text-center" aria-label={`Cantidad de ${item.name}`} />
+                    <div className="flex shrink-0 items-center gap-2">
+                      <input type="number" min="1" step="1" value={quantities[item.id] || 1} onChange={(e) => setQuantity(item.id, Number(e.target.value))} className="w-20 rounded-md border border-gray-300 px-2 py-1 text-center" aria-label={`Cantidad de ${item.name}`} />
+                      <button type="button" onClick={() => removeSelectedProduct(item.id)} className="rounded-md p-2 text-red-500 hover:bg-red-50" aria-label={`Quitar ${item.name}`}>
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2858,6 +2908,68 @@ function RestaurantOrderForm({
           </div>
         </form>
       </div>
+
+      {showProductPicker && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
+          <div className="flex max-h-[86vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-gray-200 p-5">
+              <div>
+                <h3 className="text-lg font-bold text-gray-800">Agregar producto</h3>
+                <p className="text-sm text-gray-600">Busca el producto, indica la cantidad y agregalo al pedido.</p>
+              </div>
+              <button type="button" onClick={() => setShowProductPicker(false)} className="rounded-md p-2 text-gray-500 hover:bg-gray-100" aria-label="Volver al pedido"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="border-b border-gray-200 p-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <input
+                  autoFocus
+                  type="search"
+                  value={productSearchTerm}
+                  onChange={(event) => setProductSearchTerm(event.target.value)}
+                  placeholder="Buscar por nombre, descripcion o categoria..."
+                  className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 focus:ring-2 focus:ring-orange-500"
+                />
+              </div>
+            </div>
+            <div className="overflow-auto p-4">
+              {filteredProductOptions.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-gray-300 p-8 text-center text-sm text-gray-500">No se encontraron productos.</p>
+              ) : (
+                <div className="space-y-2">
+                  {filteredProductOptions.map((item) => (
+                    <div key={item.id} className="grid gap-3 rounded-lg border border-gray-200 p-3 sm:grid-cols-[minmax(0,1fr)_90px_auto] sm:items-center">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-gray-800">{item.name}</p>
+                        <p className="text-xs text-gray-500">{moneyFormatter.format(item.price)}{item.category ? ` - ${item.category}` : ''}</p>
+                        {item.description && <p className="mt-1 line-clamp-2 text-xs text-gray-500">{item.description}</p>}
+                      </div>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={pickerQuantities[item.id] || 1}
+                        onChange={(event) => setPickerQuantities((current) => ({ ...current, [item.id]: Math.max(1, Math.floor(Number(event.target.value) || 1)) }))}
+                        className="w-full rounded-md border border-gray-300 px-2 py-2 text-center"
+                        aria-label={`Cantidad de ${item.name}`}
+                      />
+                      <button type="button" onClick={() => addProductToOrder(item.id)} className="inline-flex items-center justify-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600">
+                        <Plus className="h-4 w-4" />
+                        Agregar
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="border-t border-gray-200 p-4">
+              <button type="button" onClick={() => setShowProductPicker(false)} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                Volver al pedido
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showCustomerModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
