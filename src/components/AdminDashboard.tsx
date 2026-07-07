@@ -153,11 +153,11 @@ export function AdminDashboard() {
                   setActiveTab(item.id);
                   setSearchQuery('');
                 }}
-                className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition ${
+                className={`flex w-full items-center justify-start gap-3 rounded-md px-3 py-2 text-left text-sm font-medium transition ${
                   isActive ? 'bg-orange-50 text-orange-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
               >
-                <Icon className="h-4 w-4" />
+                <Icon className="h-4 w-4 shrink-0" />
                 {item.label}
               </button>
             );
@@ -167,9 +167,9 @@ export function AdminDashboard() {
           <p className="truncate px-2 pb-2 text-xs text-slate-500">{profile?.full_name}</p>
           <button
             onClick={() => signOut()}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+            className="flex w-full items-center justify-start gap-2 rounded-md px-3 py-2 text-left text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
           >
-            <LogOut className="h-4 w-4" />
+            <LogOut className="h-4 w-4 shrink-0" />
             Salir
           </button>
         </div>
@@ -220,11 +220,11 @@ export function AdminDashboard() {
                     setSearchQuery('');
                     setIsMobileSidebarOpen(false);
                   }}
-                  className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition ${
+                  className={`flex w-full items-center justify-start gap-3 rounded-md px-3 py-2 text-left text-sm font-medium transition ${
                     isActive ? 'bg-orange-50 text-orange-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                   }`}
                 >
-                  <Icon className="h-4 w-4" />
+                  <Icon className="h-4 w-4 shrink-0" />
                   {item.label}
                 </button>
               );
@@ -237,9 +237,9 @@ export function AdminDashboard() {
                 setIsMobileSidebarOpen(false);
                 signOut();
               }}
-              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+              className="flex w-full items-center justify-start gap-2 rounded-md px-3 py-2 text-left text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
             >
-              <LogOut className="h-4 w-4" />
+              <LogOut className="h-4 w-4 shrink-0" />
               Salir
             </button>
           </div>

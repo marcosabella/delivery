@@ -1065,12 +1065,12 @@ export function RestaurantDashboard() {
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition ${
+                className={`flex w-full items-center justify-start gap-3 rounded-md px-3 py-2 text-left text-sm font-medium transition ${
                   isActive ? 'bg-orange-50 text-orange-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
               >
-                <Icon className="h-4 w-4" />
-                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                <Icon className="h-4 w-4 shrink-0" />
+                <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
                 {'count' in item && (item.count ?? 0) > 0 && (
                   <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
                     isActive ? 'bg-orange-600 text-white' : 'bg-orange-100 text-orange-700'
@@ -1086,9 +1086,9 @@ export function RestaurantDashboard() {
           <p className="truncate px-2 pb-2 text-xs text-slate-500">{profile?.full_name}</p>
           <button
             onClick={() => signOut()}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+            className="flex w-full items-center justify-start gap-2 rounded-md px-3 py-2 text-left text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
           >
-            <LogOut className="h-4 w-4" />
+            <LogOut className="h-4 w-4 shrink-0" />
             Salir
           </button>
         </div>
@@ -1138,12 +1138,12 @@ export function RestaurantDashboard() {
                     setActiveTab(item.id);
                     setIsMobileSidebarOpen(false);
                   }}
-                  className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition ${
+                  className={`flex w-full items-center justify-start gap-3 rounded-md px-3 py-2 text-left text-sm font-medium transition ${
                     isActive ? 'bg-orange-50 text-orange-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                   }`}
                   >
-                    <Icon className="h-4 w-4" />
-                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                    <Icon className="h-4 w-4 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
                     {'count' in item && (item.count ?? 0) > 0 && (
                       <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
                         isActive ? 'bg-orange-600 text-white' : 'bg-orange-100 text-orange-700'
@@ -1162,9 +1162,9 @@ export function RestaurantDashboard() {
                 setIsMobileSidebarOpen(false);
                 signOut();
               }}
-              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+              className="flex w-full items-center justify-start gap-2 rounded-md px-3 py-2 text-left text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
             >
-              <LogOut className="h-4 w-4" />
+              <LogOut className="h-4 w-4 shrink-0" />
               Salir
             </button>
           </div>

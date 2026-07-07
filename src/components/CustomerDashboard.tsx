@@ -450,11 +450,11 @@ export function CustomerDashboard() {
                   setActiveView(item.id);
                   if (item.id === 'orders') void requestOrderNotificationPermission();
                 }}
-                className={`relative flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition ${
+                className={`relative flex w-full items-center justify-start gap-3 rounded-md px-3 py-2 text-left text-sm font-medium transition ${
                   isActive ? 'bg-orange-50 text-orange-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
               >
-                <Icon className="h-4 w-4" />
+                <Icon className="h-4 w-4 shrink-0" />
                 {item.label}
                 {item.id === 'cart' && cart.length > 0 && (
                   <span className="ml-auto rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">{cart.length}</span>
@@ -464,9 +464,9 @@ export function CustomerDashboard() {
           })}
           <button
             onClick={() => setShowProfile(!showProfile)}
-            className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+            className="flex w-full items-center justify-start gap-3 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
           >
-            <User className="h-4 w-4" />
+            <User className="h-4 w-4 shrink-0" />
             Perfil
           </button>
         </nav>
@@ -474,9 +474,9 @@ export function CustomerDashboard() {
           <p className="truncate px-2 pb-2 text-xs text-slate-500">{profile?.full_name}</p>
           <button
             onClick={() => signOut()}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+            className="flex w-full items-center justify-start gap-2 rounded-md px-3 py-2 text-left text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
           >
-            <LogOut className="h-4 w-4" />
+            <LogOut className="h-4 w-4 shrink-0" />
             Salir
           </button>
         </div>
@@ -527,11 +527,11 @@ export function CustomerDashboard() {
                     if (item.id === 'orders') void requestOrderNotificationPermission();
                     setIsMobileSidebarOpen(false);
                   }}
-                  className={`relative flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition ${
+                  className={`relative flex w-full items-center justify-start gap-3 rounded-md px-3 py-2 text-left text-sm font-medium transition ${
                     isActive ? 'bg-orange-50 text-orange-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                   }`}
                 >
-                  <Icon className="h-4 w-4" />
+                  <Icon className="h-4 w-4 shrink-0" />
                   {item.label}
                   {item.id === 'cart' && cart.length > 0 && (
                     <span className="ml-auto rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">{cart.length}</span>
@@ -544,9 +544,9 @@ export function CustomerDashboard() {
                 setShowProfile(!showProfile);
                 setIsMobileSidebarOpen(false);
               }}
-              className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+              className="flex w-full items-center justify-start gap-3 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
             >
-              <User className="h-4 w-4" />
+              <User className="h-4 w-4 shrink-0" />
               Perfil
             </button>
           </nav>
@@ -557,9 +557,9 @@ export function CustomerDashboard() {
                 setIsMobileSidebarOpen(false);
                 signOut();
               }}
-              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+              className="flex w-full items-center justify-start gap-2 rounded-md px-3 py-2 text-left text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
             >
-              <LogOut className="h-4 w-4" />
+              <LogOut className="h-4 w-4 shrink-0" />
               Salir
             </button>
           </div>
@@ -1466,9 +1466,9 @@ function ProfileEditForm({ profile, onClose }: { profile: Profile; onClose: () =
   const notificationStatus = {
     granted: {
       label: 'Activadas',
-      description: 'Vas a recibir avisos cuando cambie el estado de tus pedidos.',
-      button: 'Notificaciones activadas',
-      disabled: true,
+      description: 'Vas a recibir avisos cuando cambie el estado de tus pedidos. Podés revalidar este dispositivo si cambiaste de navegador.',
+      button: 'Revalidar dispositivo',
+      disabled: false,
       className: 'bg-green-100 text-green-700',
     },
     default: {
@@ -1483,6 +1483,13 @@ function ProfileEditForm({ profile, onClose }: { profile: Profile; onClose: () =
       description: 'El navegador las tiene bloqueadas. Habilitalas desde los permisos del sitio.',
       button: 'Permiso bloqueado',
       disabled: true,
+      className: 'bg-red-100 text-red-700',
+    },
+    registration_failed: {
+      label: 'Reintentar',
+      description: 'El permiso esta activo, pero no se pudo registrar este dispositivo.',
+      button: 'Reintentar activacion',
+      disabled: false,
       className: 'bg-red-100 text-red-700',
     },
     unsupported: {

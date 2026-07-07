@@ -973,10 +973,10 @@ function ProfileView({ profile, onSaved, onBack }: { profile: Profile; onSaved: 
   const notificationStatus = {
     granted: {
       label: 'Activadas',
-      description: 'Vas a recibir avisos cuando cambie el estado de tus pedidos.',
+      description: 'Vas a recibir avisos cuando cambie el estado de tus pedidos. Podés revalidar este dispositivo si cambiaste de navegador.',
       className: 'bg-emerald-50 text-emerald-700',
-      button: 'Notificaciones activadas',
-      disabled: true,
+      button: 'Revalidar dispositivo',
+      disabled: false,
     },
     default: {
       label: 'Pendientes',
@@ -991,6 +991,13 @@ function ProfileView({ profile, onSaved, onBack }: { profile: Profile; onSaved: 
       className: 'bg-red-50 text-red-700',
       button: 'Permiso bloqueado',
       disabled: true,
+    },
+    registration_failed: {
+      label: 'Reintentar',
+      description: 'El permiso esta activo, pero no se pudo registrar este dispositivo.',
+      className: 'bg-red-50 text-red-700',
+      button: 'Reintentar activacion',
+      disabled: false,
     },
     unsupported: {
       label: 'No disponibles',

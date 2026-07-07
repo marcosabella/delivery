@@ -30,9 +30,9 @@ export function getCustomerOrderStatusMessage(order: Pick<Order, 'id' | 'status'
   return `${customerOrderStatusMessages[order.status]} Pedido #${order.id.slice(0, 8)}.`;
 }
 
-export type OrderNotificationPermissionState = NotificationPermission | 'unsupported';
+export type OrderNotificationPermissionState = NotificationPermission | 'unsupported' | 'registration_failed';
 
-const vapidPublicKey = import.meta.env.VITE_VAPID_PUBLIC_KEY as string | undefined;
+const vapidPublicKey = (import.meta.env.VITE_VAPID_PUBLIC_KEY as string | undefined)?.trim();
 
 function supportsPushNotifications() {
   return typeof window !== 'undefined'
@@ -55,6 +55,21 @@ function urlBase64ToUint8Array(base64String: string) {
   return outputArray;
 }
 
+function bufferSourceToUint8Array(source: BufferSource) {
+  if (source instanceof ArrayBuffer) return new Uint8Array(source);
+  return new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+}
+
+function arraysAreEqual(left: Uint8Array, right: Uint8Array) {
+  if (left.byteLength !== right.byteLength) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+function subscriptionUsesApplicationServerKey(subscription: PushSubscription, applicationServerKey: Uint8Array) {
+  const existingKey = subscription.options.applicationServerKey;
+  return Boolean(existingKey && arraysAreEqual(bufferSourceToUint8Array(existingKey), applicationServerKey));
+}
+
 export function getOrderNotificationPermissionState(): OrderNotificationPermissionState {
   if (!supportsPushNotifications()) return 'unsupported';
   return Notification.permission;
@@ -66,7 +81,8 @@ export async function requestOrderNotificationPermission(): Promise<OrderNotific
     await Notification.requestPermission();
   }
   if (Notification.permission === 'granted') {
-    await registerOrderPushSubscription();
+    const registered = await registerOrderPushSubscription();
+    if (!registered) return 'registration_failed';
   }
   return Notification.permission;
 }
@@ -74,18 +90,37 @@ export async function requestOrderNotificationPermission(): Promise<OrderNotific
 export async function registerOrderPushSubscription() {
   if (!supportsPushNotifications() || Notification.permission !== 'granted' || !vapidPublicKey) return false;
 
-  const registration = await navigator.serviceWorker.register('/order-push-sw.js');
-  const subscription = await registration.pushManager.getSubscription()
-    || await registration.pushManager.subscribe({
+  try {
+    const applicationServerKey = urlBase64ToUint8Array(vapidPublicKey);
+    const registration = await navigator.serviceWorker.register('/order-push-sw.js');
+    await navigator.serviceWorker.ready;
+
+    let subscription = await registration.pushManager.getSubscription();
+
+    if (subscription && !subscriptionUsesApplicationServerKey(subscription, applicationServerKey)) {
+      await subscription.unsubscribe();
+      subscription = null;
+    }
+
+    subscription = subscription || await registration.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+      applicationServerKey,
     });
 
-  const { error } = await supabase.functions.invoke('register-push-subscription', {
-    body: { subscription: subscription.toJSON() },
-  });
+    const { error } = await supabase.functions.invoke('register-push-subscription', {
+      body: { subscription: subscription.toJSON() },
+    });
 
-  return !error;
+    if (error) {
+      console.error('Push subscription registration error:', error);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Push subscription registration exception:', error);
+    return false;
+  }
 }
 
 export async function notifyCustomerOrderStatus(orderId: string) {
