@@ -116,6 +116,7 @@ type RestaurantPromotion = {
   restaurant_id: string;
   category_id: string | null;
   category: string | null;
+  image_url: string | null;
   name: string;
   description: string | null;
   promotion_type: 'combo' | 'discount';
@@ -254,6 +255,7 @@ export function RestaurantDashboard() {
   const [reportDeliveryFilter, setReportDeliveryFilter] = useState<ReportDeliveryFilter>('all');
   const [reportStatusFilter, setReportStatusFilter] = useState<ReportStatusFilter>('all');
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
+  const [editingPromotion, setEditingPromotion] = useState<RestaurantPromotion | null>(null);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [showOrderDetail, setShowOrderDetail] = useState(false);
   const [routeOrderIds, setRouteOrderIds] = useState<string[]>([]);
@@ -1581,7 +1583,11 @@ export function RestaurantDashboard() {
                               .map((item) => `${item.quantity}x ${item.menu_item?.name || 'Producto'}`)
                               .join(', ');
                             return (
-                              <div key={promotion.id} className="rounded-lg border border-gray-200 p-4">
+                              <div key={promotion.id} className="overflow-hidden rounded-lg border border-gray-200">
+                                {promotion.image_url && (
+                                  <img src={promotion.image_url} alt={promotion.name} className="h-36 w-full object-cover" />
+                                )}
+                                <div className="p-4">
                                 <div className="flex items-start justify-between gap-3">
                                   <div className="min-w-0">
                                     <p className="font-semibold text-gray-800">{promotion.name}</p>
@@ -1601,9 +1607,13 @@ export function RestaurantDashboard() {
                                   <button type="button" onClick={() => handleTogglePromotion(promotion)} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">
                                     {promotion.is_active ? 'Desactivar' : 'Activar'}
                                   </button>
+                                  <button type="button" onClick={() => setEditingPromotion(promotion)} className="rounded-lg border border-blue-200 px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50">
+                                    Editar
+                                  </button>
                                   <button type="button" onClick={() => handleDeletePromotion(promotion.id)} className="rounded-lg bg-red-50 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-100">
                                     Eliminar
                                   </button>
+                                </div>
                                 </div>
                               </div>
                             );
@@ -2484,6 +2494,16 @@ export function RestaurantDashboard() {
           menuItems={menuItems}
           categories={dishCategories}
           onClose={() => { setShowPromotionForm(false); loadPromotions(); }}
+        />
+      )}
+
+      {editingPromotion && selectedRestaurant && (
+        <PromotionForm
+          restaurantId={selectedRestaurant.id}
+          menuItems={menuItems}
+          categories={dishCategories}
+          promotion={editingPromotion}
+          onClose={() => { setEditingPromotion(null); loadPromotions(); }}
         />
       )}
 
@@ -3550,25 +3570,59 @@ function RestaurantOrderForm({
   );
 }
 
-function PromotionForm({ restaurantId, menuItems, categories, onClose }: { restaurantId: string; menuItems: MenuItem[]; categories: DishCategory[]; onClose: () => void }) {
-  const availableItems = menuItems.filter((item) => item.is_available);
+function PromotionForm({ restaurantId, menuItems, categories, promotion, onClose }: { restaurantId: string; menuItems: MenuItem[]; categories: DishCategory[]; promotion?: RestaurantPromotion; onClose: () => void }) {
+  const isEditing = Boolean(promotion);
+  const selectableItems = isEditing ? menuItems : menuItems.filter((item) => item.is_available);
   const comboCategory = categories.find((category) => category.slug === 'combos');
   const [form, setForm] = useState({
-    name: '',
-    description: '',
-    categoryId: comboCategory?.id || categories[0]?.id || '',
-    promotionType: 'combo' as RestaurantPromotion['promotion_type'],
-    discountType: 'fixed_price' as RestaurantPromotion['discount_type'],
-    discountValue: '',
-    startsAt: '',
-    endsAt: '',
-    isActive: true,
+    name: promotion?.name || '',
+    description: promotion?.description || '',
+    categoryId: promotion?.category_id || comboCategory?.id || categories[0]?.id || '',
+    promotionType: promotion?.promotion_type || 'combo' as RestaurantPromotion['promotion_type'],
+    discountType: promotion?.discount_type || 'fixed_price' as RestaurantPromotion['discount_type'],
+    discountValue: promotion?.discount_value?.toString() || '',
+    startsAt: promotion?.starts_at ? toDateTimeInputValue(promotion.starts_at) : '',
+    endsAt: promotion?.ends_at ? toDateTimeInputValue(promotion.ends_at) : '',
+    isActive: promotion?.is_active ?? true,
   });
-  const [selectedItems, setSelectedItems] = useState<Record<string, number>>({});
+  const [selectedItems, setSelectedItems] = useState<Record<string, number>>(() =>
+    Object.fromEntries((promotion?.items || []).map((item) => [item.menu_item_id, item.quantity])),
+  );
+  const [image, setImage] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string>(promotion?.image_url || '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const selectedMenuItems = availableItems.filter((item) => selectedItems[item.id] > 0);
+  const selectedMenuItems = selectableItems.filter((item) => selectedItems[item.id] > 0);
+
+  function handleImageChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setImage(file);
+    const reader = new FileReader();
+    reader.onloadend = () => setImagePreview(reader.result as string);
+    reader.readAsDataURL(file);
+  }
+
+  async function uploadImage(): Promise<string | null> {
+    if (!image) return promotion?.image_url || null;
+
+    const fileExt = image.name.split('.').pop();
+    const fileName = `${Date.now()}.${fileExt}`;
+    const imagePath = `${restaurantId}/${fileName}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('promotion-images')
+      .upload(imagePath, image);
+
+    if (uploadError) {
+      setError('No se pudo subir la foto de la promocion.');
+      return null;
+    }
+
+    return supabase.storage.from('promotion-images').getPublicUrl(imagePath).data.publicUrl;
+  }
 
   function setPromotionType(value: RestaurantPromotion['promotion_type']) {
     setForm({
@@ -3606,12 +3660,17 @@ function PromotionForm({ restaurantId, menuItems, categories, onClose }: { resta
     }
 
     setLoading(true);
-    const { data: promotion, error: promotionError } = await supabase
-      .from('restaurant_promotions')
-      .insert({
+    const imageUrl = await uploadImage();
+    if (image && !imageUrl) {
+      setLoading(false);
+      return;
+    }
+
+    const promotionPayload = {
         restaurant_id: restaurantId,
         name: form.name.trim(),
         description: form.description.trim() || null,
+        image_url: imageUrl,
         category_id: form.categoryId || null,
         promotion_type: form.promotionType,
         discount_type: form.discountType,
@@ -3619,27 +3678,52 @@ function PromotionForm({ restaurantId, menuItems, categories, onClose }: { resta
         starts_at: form.startsAt ? new Date(form.startsAt).toISOString() : null,
         ends_at: form.endsAt ? new Date(form.endsAt).toISOString() : null,
         is_active: form.isActive,
-      })
-      .select('id')
-      .single();
+        updated_at: new Date().toISOString(),
+      };
 
-    if (promotionError || !promotion) {
+    const savePromotion = isEditing
+      ? await supabase
+          .from('restaurant_promotions')
+          .update(promotionPayload)
+          .eq('id', promotion!.id)
+          .select('id')
+          .single()
+      : await supabase
+          .from('restaurant_promotions')
+          .insert(promotionPayload)
+          .select('id')
+          .single();
+    const { data: savedPromotion, error: promotionError } = savePromotion;
+
+    if (promotionError || !savedPromotion) {
       setLoading(false);
-      setError('No se pudo crear la promocion.');
+      setError(isEditing ? 'No se pudo actualizar la promocion.' : 'No se pudo crear la promocion.');
       return;
+    }
+
+    if (isEditing) {
+      const { error: deleteItemsError } = await supabase
+        .from('restaurant_promotion_items')
+        .delete()
+        .eq('promotion_id', savedPromotion.id);
+      if (deleteItemsError) {
+        setLoading(false);
+        setError('No se pudieron actualizar los productos de la promocion.');
+        return;
+      }
     }
 
     const { error: itemsError } = await supabase
       .from('restaurant_promotion_items')
       .insert(selectedMenuItems.map((item) => ({
-        promotion_id: promotion.id,
+        promotion_id: savedPromotion.id,
         menu_item_id: item.id,
         quantity: Math.max(1, selectedItems[item.id] || 1),
       })));
 
     setLoading(false);
     if (itemsError) {
-      await supabase.from('restaurant_promotions').delete().eq('id', promotion.id);
+      if (!isEditing) await supabase.from('restaurant_promotions').delete().eq('id', savedPromotion.id);
       setError('No se pudieron guardar los productos de la promocion.');
       return;
     }
@@ -3652,8 +3736,8 @@ function PromotionForm({ restaurantId, menuItems, categories, onClose }: { resta
       <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-xl font-bold text-gray-800">Agregar promocion</h2>
-            <p className="text-sm text-gray-600">Crea combos con precio especial o descuentos por fecha.</p>
+            <h2 className="text-xl font-bold text-gray-800">{isEditing ? 'Editar promocion' : 'Agregar promocion'}</h2>
+            <p className="text-sm text-gray-600">{isEditing ? 'Actualiza categoria, precio, vigencia y productos.' : 'Crea combos con precio especial o descuentos por fecha.'}</p>
           </div>
           <button type="button" onClick={onClose} className="rounded-md p-2 text-gray-500 hover:bg-gray-100" aria-label="Cerrar">
             <X className="h-5 w-5" />
@@ -3661,6 +3745,18 @@ function PromotionForm({ restaurantId, menuItems, categories, onClose }: { resta
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="mb-2 block text-sm font-medium text-gray-700">Foto del combo/promocion</label>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={handleImageChange}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+            />
+            {imagePreview && (
+              <img src={imagePreview} alt="Vista previa" className="mt-3 h-40 w-full rounded-lg object-cover" />
+            )}
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Nombre de la promocion" className="rounded-lg border border-gray-300 px-3 py-2 text-sm sm:col-span-2" />
             <textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Descripcion opcional" rows={2} className="rounded-lg border border-gray-300 px-3 py-2 text-sm sm:col-span-2" />
@@ -3697,11 +3793,11 @@ function PromotionForm({ restaurantId, menuItems, categories, onClose }: { resta
 
           <section className="rounded-lg border border-gray-200 p-3">
             <h3 className="mb-3 font-semibold text-gray-800">Productos incluidos</h3>
-            {availableItems.length === 0 ? (
+            {selectableItems.length === 0 ? (
               <p className="text-sm text-gray-500">No hay productos disponibles.</p>
             ) : (
               <div className="max-h-64 space-y-2 overflow-auto">
-                {availableItems.map((item) => (
+                {selectableItems.map((item) => (
                   <div key={item.id} className="grid gap-2 rounded-lg bg-gray-50 px-3 py-2 sm:grid-cols-[auto_minmax(0,1fr)_90px] sm:items-center">
                     <input type="checkbox" checked={Boolean(selectedItems[item.id])} onChange={() => toggleItem(item.id)} />
                     <div className="min-w-0">
@@ -3719,7 +3815,7 @@ function PromotionForm({ restaurantId, menuItems, categories, onClose }: { resta
 
           <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
             <button type="button" onClick={onClose} className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50">Cancelar</button>
-            <button type="submit" disabled={loading || availableItems.length === 0 || categories.length === 0} className="rounded-lg bg-orange-500 px-4 py-2 font-semibold text-white hover:bg-orange-600 disabled:opacity-50">
+            <button type="submit" disabled={loading || selectableItems.length === 0 || categories.length === 0} className="rounded-lg bg-orange-500 px-4 py-2 font-semibold text-white hover:bg-orange-600 disabled:opacity-50">
               {loading ? 'Guardando...' : 'Guardar promocion'}
             </button>
           </div>

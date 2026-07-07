@@ -52,6 +52,7 @@ type RestaurantPromotion = {
   restaurant_id: string;
   category_id: string | null;
   category: string | null;
+  image_url: string | null;
   name: string;
   description: string | null;
   promotion_type: 'combo' | 'discount';
@@ -430,6 +431,17 @@ export function Landing() {
     const favoriteDiff = Number(favoriteMenuItemIds.has(b.id)) - Number(favoriteMenuItemIds.has(a.id));
     return promoDiff || favoriteDiff || a.name.localeCompare(b.name);
   });
+  const filteredComboPromotions = comboPromotions.filter((promotion) => {
+    const restaurant = restaurantById.get(promotion.restaurant_id);
+    const matchesCategory = categoryId === 'all' || promotion.category_id === categoryId;
+    const searchable = [promotion.name, promotion.description, promotion.category, restaurant?.name]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    return matchesCategory && (!normalizedQuery || searchable.includes(normalizedQuery));
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  const visibleCatalogCount = filteredItems.length + filteredComboPromotions.length;
 
   const filteredRestaurants = restaurants.filter((restaurant) => {
     if (!normalizedQuery) return true;
@@ -486,9 +498,9 @@ export function Landing() {
           restaurant_id: promotion.restaurant_id,
           name: promotion.name,
           description: promotion.description,
-          category: 'Combo',
+          category: promotion.category || 'Combo',
           price: getPromotionPrice(promotion),
-          image_url: null,
+          image_url: promotion.image_url,
           quantity: 1,
           cartType: 'promotion' as const,
           itemsLabel,
@@ -503,9 +515,9 @@ export function Landing() {
               restaurant_id: promotion.restaurant_id,
               name: promotion.name,
               description: promotion.description,
-              category: 'Combo',
+              category: promotion.category || 'Combo',
               price: getPromotionPrice(promotion),
-              image_url: null,
+              image_url: promotion.image_url,
               quantity: 1,
               cartType: 'promotion' as const,
               itemsLabel,
@@ -761,10 +773,14 @@ export function Landing() {
                 const discountPrice = discountItem ? getDiscountedPrice(Number(discountItem.price), promotion) : 0;
                 return (
                   <article key={promotion.id} className="overflow-hidden rounded-2xl border border-orange-100 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg">
-                    <div className="bg-gradient-to-br from-orange-500 to-amber-500 p-4 text-white">
-                      <span className="rounded-full bg-white/20 px-2.5 py-1 text-xs font-bold">{promotion.category || (isCombo ? 'Combo' : 'Descuento')}</span>
-                      <h3 className="mt-3 line-clamp-2 text-lg font-black">{promotion.name}</h3>
-                      <p className="mt-1 truncate text-sm text-white/85">{restaurant?.name || 'Restaurante'}</p>
+                    <div className="relative h-40 overflow-hidden bg-gradient-to-br from-orange-500 to-amber-500 p-4 text-white">
+                      {promotion.image_url && <img src={promotion.image_url} alt={promotion.name} className="absolute inset-0 h-full w-full object-cover" />}
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent" />
+                      <div className="relative">
+                        <span className="rounded-full bg-white/20 px-2.5 py-1 text-xs font-bold">{promotion.category || (isCombo ? 'Combo' : 'Descuento')}</span>
+                        <h3 className="mt-3 line-clamp-2 text-lg font-black">{promotion.name}</h3>
+                        <p className="mt-1 truncate text-sm text-white/85">{restaurant?.name || 'Restaurante'}</p>
+                      </div>
                     </div>
                     <div className="p-4">
                       {promotion.description && <p className="line-clamp-2 text-sm text-slate-600">{promotion.description}</p>}
@@ -830,27 +846,55 @@ export function Landing() {
             </div>
             {loading ? (
               <div className="py-16 text-center text-slate-500">Cargando catalogo...</div>
-            ) : filteredItems.length === 0 ? (
+            ) : visibleCatalogCount === 0 ? (
               <div className="rounded-2xl bg-slate-50 py-16 text-center"><Search className="mx-auto h-10 w-10 text-slate-300" /><p className="mt-3 text-slate-500">No encontramos resultados para tu busqueda.</p></div>
             ) : (
               <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {filteredComboPromotions.slice(0, 12).map((promotion) => {
+                  const restaurant = restaurantById.get(promotion.restaurant_id);
+                  const itemsLabel = (promotion.items || []).map((item) => `${item.quantity}x ${item.menu_item?.name || 'Producto'}`).join(', ');
+                  const price = getPromotionPrice(promotion);
+                  return (
+                    <article key={`promotion:${promotion.id}`} className="group flex h-full flex-col overflow-hidden rounded-2xl border border-orange-100 bg-white shadow-sm hover:shadow-lg">
+                      <div className="relative h-40 overflow-hidden bg-gradient-to-br from-orange-500 to-amber-500 p-4 text-white">
+                        {promotion.image_url && <img src={promotion.image_url} alt={promotion.name} className="absolute inset-0 h-full w-full object-cover transition duration-300 group-hover:scale-105" />}
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent" />
+                        <div className="relative">
+                          <span className="rounded-full bg-white/20 px-2.5 py-1 text-xs font-bold">{promotion.category || 'Combo'}</span>
+                          <h3 className="mt-4 line-clamp-2 text-xl font-black">{promotion.name}</h3>
+                          <p className="mt-2 truncate text-sm text-white/85">{restaurant?.name || 'Restaurante'}</p>
+                        </div>
+                      </div>
+                      <div className="flex flex-1 flex-col p-4">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-orange-600">Combo</p>
+                        <p className="mt-1 line-clamp-2 min-h-10 text-sm text-slate-500">{promotion.description || itemsLabel || promotion.category}</p>
+                        <div className="mt-auto flex items-center justify-between gap-3 pt-4">
+                          <span className="text-xl font-black text-orange-600">${Number(price).toLocaleString('es-AR')}</span>
+                          <button type="button" onClick={() => addPromotionToCart(promotion)} className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600">
+                            Agregar
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
                 {filteredItems.slice(0, 12).map((item) => {
                   const restaurant = restaurantById.get(item.restaurant_id);
                   const isFavorite = favoriteMenuItemIds.has(item.id);
                   const promo = getItemDiscountPromotion(item.id);
                   const price = getMenuItemPrice(item);
                   return (
-                    <article key={item.id} className="group overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm hover:shadow-lg">
+                    <article key={item.id} className="group flex h-full flex-col overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm hover:shadow-lg">
                       <div className="relative h-40 overflow-hidden bg-slate-100">
                         {item.image_url ? <img src={item.image_url} alt={item.name} className="h-full w-full object-cover transition duration-300 group-hover:scale-105" /> : <div className="flex h-full items-center justify-center"><UtensilsCrossed className="h-10 w-10 text-slate-300" /></div>}
                         {promo && <span className="absolute left-3 top-3 rounded-full bg-orange-500 px-2.5 py-1 text-xs font-bold text-white">Promo</span>}
                         <button type="button" onClick={() => void toggleFavoriteMenuItem(item.id)} className={`absolute right-3 top-3 rounded-full p-2 shadow-sm transition ${isFavorite ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-white text-slate-500 hover:bg-red-50 hover:text-red-500'}`} aria-label={isFavorite ? 'Quitar producto de favoritos' : 'Agregar producto a favoritos'} title={isFavorite ? 'Quitar de favoritos' : 'Agregar a favoritos'}><Heart className={`h-4 w-4 ${isFavorite ? 'fill-current' : ''}`} /></button>
                       </div>
-                      <div className="p-4">
+                      <div className="flex flex-1 flex-col p-4">
                         <p className="text-xs font-semibold uppercase tracking-wide text-orange-600">{restaurant?.name}</p>
                         <h3 className="mt-1 font-bold">{item.name}</h3>
                         <p className="mt-1 line-clamp-2 min-h-10 text-sm text-slate-500">{item.description || item.category}</p>
-                        <div className="mt-4 flex items-center justify-between gap-3">
+                        <div className="mt-auto flex items-center justify-between gap-3 pt-4">
                           <div>
                             {promo && <p className="text-xs text-slate-400 line-through">${Number(item.price).toLocaleString('es-AR')}</p>}
                             <span className="text-xl font-black text-orange-600">${Number(price).toLocaleString('es-AR')}</span>
@@ -940,7 +984,11 @@ function RestaurantView({ restaurant, items, promotions, onBack, onAddToCart, on
               const isCombo = promotion.promotion_type === 'combo';
               const itemsLabel = (promotion.items || []).map((item) => `${item.quantity}x ${item.menu_item?.name || 'Producto'}`).join(', ');
               return (
-                <div key={promotion.id} className="rounded-xl bg-orange-50 p-4">
+                <div key={promotion.id} className="overflow-hidden rounded-xl bg-orange-50">
+                  {promotion.image_url && (
+                    <img src={promotion.image_url} alt={promotion.name} className="h-36 w-full object-cover" />
+                  )}
+                  <div className="p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <span className="rounded-full bg-orange-500 px-2.5 py-1 text-xs font-bold text-white">{promotion.category || (isCombo ? 'Combo' : 'Descuento')}</span>
@@ -953,6 +1001,7 @@ function RestaurantView({ restaurant, items, promotions, onBack, onAddToCart, on
                   <button type="button" onClick={() => onAddPromotionToCart(promotion)} className="mt-4 w-full rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600">
                     Agregar al carrito
                   </button>
+                  </div>
                 </div>
               );
             })}

@@ -7,7 +7,48 @@ import { customerOrderStatusLabels, getCustomerOrderStatusMessage, getOrderNotif
 import { LogOut, Store, ShoppingCart, Clock, MapPin, Search, X, User, AlertCircle, CheckCircle, Home, Pencil, Menu, BellRing, Heart } from 'lucide-react';
 import { MessageModal } from './MessageModal';
 
-type CartItem = MenuItem & { quantity: number };
+type RestaurantPromotionItem = {
+  id: string;
+  menu_item_id: string;
+  quantity: number;
+  menu_item?: Pick<MenuItem, 'id' | 'name' | 'price' | 'category'> | null;
+};
+
+type RestaurantPromotion = {
+  id: string;
+  restaurant_id: string;
+  category_id: string | null;
+  category: string | null;
+  image_url: string | null;
+  name: string;
+  description: string | null;
+  promotion_type: 'combo' | 'discount';
+  discount_type: 'fixed_price' | 'percentage' | 'amount';
+  discount_value: number;
+  starts_at: string | null;
+  ends_at: string | null;
+  is_active: boolean;
+  items?: RestaurantPromotionItem[];
+};
+
+type MenuCartItem = MenuItem & { quantity: number; itemType?: 'menu_item' };
+type PromotionCartItem = {
+  id: string;
+  promotionId: string;
+  restaurant_id: string;
+  name: string;
+  description: string | null;
+  price: number;
+  image_url: string | null;
+  category_id: string | null;
+  category: string | null;
+  is_available: boolean;
+  created_at: string;
+  updated_at: string;
+  quantity: number;
+  itemType: 'promotion';
+};
+type CartItem = MenuCartItem | PromotionCartItem;
 type DeliveryMethod = 'delivery' | 'pickup';
 const CART_STORAGE_KEY = 'food-delivery-cart';
 const RESTAURANT_STORAGE_KEY = 'food-delivery-restaurant';
@@ -28,12 +69,58 @@ function readStoredRestaurant(): Restaurant | null {
   }
 }
 
+function isPromotionCurrent(promotion: Pick<RestaurantPromotion, 'is_active' | 'starts_at' | 'ends_at'>) {
+  if (!promotion.is_active) return false;
+
+  const now = new Date();
+  if (promotion.starts_at && new Date(promotion.starts_at) > now) return false;
+  if (promotion.ends_at && new Date(promotion.ends_at) < now) return false;
+
+  return true;
+}
+
+function getDiscountedPrice(price: number, promotion: Pick<RestaurantPromotion, 'discount_type' | 'discount_value'>) {
+  const discountValue = Number(promotion.discount_value || 0);
+  if (promotion.discount_type === 'fixed_price') return Math.max(0, discountValue);
+  if (promotion.discount_type === 'percentage') return Math.max(0, price * (1 - discountValue / 100));
+  return Math.max(0, price - discountValue);
+}
+
+function getComboBaseTotal(promotion: RestaurantPromotion) {
+  return (promotion.items || []).reduce(
+    (sum, item) => sum + Number(item.menu_item?.price || 0) * item.quantity,
+    0,
+  );
+}
+
+function promotionToCartItem(promotion: RestaurantPromotion): PromotionCartItem {
+  return {
+    id: `promotion:${promotion.id}`,
+    promotionId: promotion.id,
+    restaurant_id: promotion.restaurant_id,
+    name: promotion.name,
+    description: promotion.description,
+    price: promotion.discount_type === 'fixed_price'
+      ? Number(promotion.discount_value)
+      : getDiscountedPrice(getComboBaseTotal(promotion), promotion),
+    image_url: promotion.image_url,
+    category_id: promotion.category_id,
+    category: promotion.category,
+    is_available: promotion.is_active,
+    created_at: promotion.created_at,
+    updated_at: promotion.updated_at,
+    quantity: 1,
+    itemType: 'promotion',
+  };
+}
+
 export function CustomerDashboard() {
   const { profile, signOut } = useAuth();
   const { getCurrentLocation, location, error: geoError, loading: geoLoading } = useGeolocation();
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [selectedRestaurant, setSelectedRestaurant] = useState<Restaurant | null>(readStoredRestaurant);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [promotions, setPromotions] = useState<RestaurantPromotion[]>([]);
   const [cart, setCart] = useState<CartItem[]>(readStoredCart);
   const [orders, setOrders] = useState<Order[]>([]);
   const [favoriteRestaurantIds, setFavoriteRestaurantIds] = useState<Set<string>>(() => new Set());
@@ -90,6 +177,7 @@ export function CustomerDashboard() {
   useEffect(() => {
     if (selectedRestaurant) {
       loadMenuItems();
+      loadPromotions();
     }
   }, [selectedRestaurant]);
 
@@ -114,6 +202,28 @@ export function CustomerDashboard() {
       .order('category', { ascending: true });
 
     if (data) setMenuItems(data);
+  }
+
+  async function loadPromotions() {
+    if (!selectedRestaurant) return;
+
+    const { data } = await supabase
+      .from('restaurant_promotions')
+      .select(`
+        *,
+        items:restaurant_promotion_items (
+          id,
+          menu_item_id,
+          quantity,
+          menu_item:menu_items (id, name, price, category)
+        )
+      `)
+      .eq('restaurant_id', selectedRestaurant.id)
+      .eq('is_active', true)
+      .eq('promotion_type', 'combo')
+      .order('category', { ascending: true });
+
+    setPromotions(((data || []) as unknown as RestaurantPromotion[]).filter(isPromotionCurrent));
   }
 
   async function loadOrders() {
@@ -261,12 +371,12 @@ export function CustomerDashboard() {
     }
   }
 
-  function addToCart(item: MenuItem) {
+  function addToCart(item: MenuItem | PromotionCartItem) {
     const existing = cart.find((i) => i.id === item.id);
     if (existing) {
       setCart(cart.map((i) => (i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i)));
     } else {
-      setCart([...cart, { ...item, quantity: 1 }]);
+      setCart([...cart, { ...item, quantity: 1 } as CartItem]);
     }
   }
 
@@ -340,40 +450,29 @@ export function CustomerDashboard() {
       addressToSave = addDefaultLocality(enteredAddress, currentLocation?.locality);
     }
 
-    const total = getCartTotal();
+    const orderItems = cart.map((item) => item.itemType === 'promotion'
+      ? { promotionId: item.promotionId, quantity: item.quantity }
+      : { menuItemId: item.id, quantity: item.quantity });
 
-    const { data: order, error: orderError } = await supabase
-      .from('orders')
-      .insert({
-        customer_id: profile!.id,
-        restaurant_id: selectedRestaurant.id,
-        total_amount: total,
-        delivery_method: deliveryMethod,
-        delivery_address: addressToSave,
-        status: 'pending',
+    const { data, error: orderError } = await supabase.functions.invoke('restaurant-orders', {
+      body: {
+        restaurantId: selectedRestaurant.id,
+        customer: {
+          id: profile!.id,
+          fullName: profile?.full_name || profile?.email || 'Cliente',
+          email: profile?.email || '',
+          phone: profile?.phone || '',
+        },
+        deliveryMethod,
+        deliveryAddress: addressToSave,
         latitude: locationToSave?.lat ?? null,
         longitude: locationToSave?.lng ?? null,
-      })
-      .select()
-      .single();
+        items: orderItems,
+      },
+    });
 
-    if (orderError || !order) {
+    if (orderError || data?.error) {
       setModalMessage({ type: 'error', message: 'No se pudo crear el pedido.' });
-      return;
-    }
-
-    const orderItems = cart.map((item) => ({
-      order_id: order.id,
-      menu_item_id: item.id,
-      quantity: item.quantity,
-      unit_price: item.price,
-      subtotal: item.price * item.quantity,
-    }));
-
-    const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
-
-    if (itemsError) {
-      setModalMessage({ type: 'error', message: 'No se pudo guardar el detalle del pedido.' });
       return;
     }
 
@@ -398,9 +497,13 @@ export function CustomerDashboard() {
       return favoriteDiff || a.name.localeCompare(b.name);
     });
 
-  const sortedMenuItems = [...menuItems].sort((a, b) => {
-    const favoriteDiff = Number(favoriteMenuItemIds.has(b.id)) - Number(favoriteMenuItemIds.has(a.id));
-    return favoriteDiff || a.name.localeCompare(b.name);
+  const catalogMenuItems: MenuCartItem[] = menuItems.map((item) => ({ ...item, quantity: 1, itemType: 'menu_item' }));
+  const comboItems = promotions.map(promotionToCartItem);
+  const sortedCatalogItems = [...catalogMenuItems, ...comboItems].sort((a, b) => {
+    const aFavorite = a.itemType !== 'promotion' && favoriteMenuItemIds.has(a.id);
+    const bFavorite = b.itemType !== 'promotion' && favoriteMenuItemIds.has(b.id);
+    const favoriteDiff = Number(bFavorite) - Number(aFavorite);
+    return favoriteDiff || (a.category || '').localeCompare(b.category || '') || a.name.localeCompare(b.name);
   });
   const favoriteRestaurants = restaurants
     .filter((restaurant) => favoriteRestaurantIds.has(restaurant.id))
@@ -1114,33 +1217,43 @@ export function CustomerDashboard() {
               </div>
             </div>
 
-            {menuItems.length === 0 ? (
+            {sortedCatalogItems.length === 0 ? (
               <div className="rounded-lg bg-white py-8 text-center">
                 <p className="text-gray-600">Este restaurante no tiene elementos en el menú aún</p>
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {sortedMenuItems.map((item) => (
+                {sortedCatalogItems.map((item) => {
+                  const isPromotion = item.itemType === 'promotion';
+                  return (
                   <div key={item.id} className="overflow-hidden rounded-lg bg-white shadow-sm transition hover:shadow-md">
                     <div className="relative flex h-24 items-center justify-center bg-slate-100">
-                      <Store className="h-7 w-7 text-slate-400" />
-                      <button
-                        type="button"
-                        onClick={() => void toggleFavoriteMenuItem(item.id)}
-                        className={`absolute right-3 top-3 rounded-full p-2 shadow-sm transition ${
-                          favoriteMenuItemIds.has(item.id)
-                            ? 'bg-red-500 text-white hover:bg-red-600'
-                            : 'bg-white text-slate-500 hover:bg-red-50 hover:text-red-500'
-                        }`}
-                        aria-label={favoriteMenuItemIds.has(item.id) ? 'Quitar producto de favoritos' : 'Agregar producto a favoritos'}
-                      >
-                        <Heart className={`h-4 w-4 ${favoriteMenuItemIds.has(item.id) ? 'fill-current' : ''}`} />
-                      </button>
+                      {item.image_url ? (
+                        <img src={item.image_url} alt={item.name} className="h-full w-full object-cover" />
+                      ) : (
+                        <Store className="h-7 w-7 text-slate-400" />
+                      )}
+                      {isPromotion ? (
+                        <span className="absolute right-3 top-3 rounded-full bg-orange-500 px-2 py-1 text-xs font-semibold text-white">Combo</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => void toggleFavoriteMenuItem(item.id)}
+                          className={`absolute right-3 top-3 rounded-full p-2 shadow-sm transition ${
+                            favoriteMenuItemIds.has(item.id)
+                              ? 'bg-red-500 text-white hover:bg-red-600'
+                              : 'bg-white text-slate-500 hover:bg-red-50 hover:text-red-500'
+                          }`}
+                          aria-label={favoriteMenuItemIds.has(item.id) ? 'Quitar producto de favoritos' : 'Agregar producto a favoritos'}
+                        >
+                          <Heart className={`h-4 w-4 ${favoriteMenuItemIds.has(item.id) ? 'fill-current' : ''}`} />
+                        </button>
+                      )}
                     </div>
                     <div className="p-4">
                       <div className="flex justify-between items-start mb-2">
                         <h3 className="font-bold text-gray-800 flex-1">{item.name}</h3>
-                        {favoriteMenuItemIds.has(item.id) ? (
+                        {!isPromotion && favoriteMenuItemIds.has(item.id) ? (
                           <span className="rounded bg-red-50 px-2 py-1 text-xs font-semibold text-red-600">
                             Favorito
                           </span>
@@ -1162,7 +1275,8 @@ export function CustomerDashboard() {
                       </div>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
