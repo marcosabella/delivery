@@ -234,9 +234,8 @@ Deno.serve(async (req: Request) => {
       waitsRestaurant = Boolean(waiterAssignments[0]);
     }
 
-    if (!ownsRestaurant && !waitsRestaurant) return json({ error: "Restaurant access denied" }, 403);
-
     if (body.action === "listCustomers") {
+      if (!ownsRestaurant && !waitsRestaurant) return json({ error: "Restaurant access denied" }, 403);
       if (!ownsRestaurant) return json({ error: "Restaurant owner access required" }, 403);
 
       const profileResponse = await fetch(
@@ -260,6 +259,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (body.action === "updateTableOrder") {
+      if (!ownsRestaurant && !waitsRestaurant) return json({ error: "Restaurant access denied" }, 403);
       const orderId = String(body.orderId || "").trim();
       if (!orderId || requestedItems.length === 0) {
         return json({ error: "Faltan datos obligatorios del pedido" }, 400);
@@ -309,6 +309,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (body.action === "closeTableOrder") {
+      if (!ownsRestaurant && !waitsRestaurant) return json({ error: "Restaurant access denied" }, 403);
       const orderId = String(body.orderId || "").trim();
       if (!orderId) return json({ error: "Faltan datos obligatorios del pedido" }, 400);
 

@@ -114,6 +114,8 @@ type RestaurantPromotionItem = {
 type RestaurantPromotion = {
   id: string;
   restaurant_id: string;
+  category_id: string | null;
+  category: string | null;
   name: string;
   description: string | null;
   promotion_type: 'combo' | 'discount';
@@ -1584,6 +1586,7 @@ export function RestaurantDashboard() {
                                   <div className="min-w-0">
                                     <p className="font-semibold text-gray-800">{promotion.name}</p>
                                     <p className="text-sm text-gray-500">{promotion.promotion_type === 'combo' ? 'Combo' : 'Descuento'} - {promotion.discount_type === 'percentage' ? `${promotion.discount_value}%` : moneyFormatter.format(Number(promotion.discount_value))}</p>
+                                    {promotion.category && <p className="mt-1 text-xs font-semibold text-orange-600">{promotion.category}</p>}
                                   </div>
                                   <span className={`rounded-full px-2 py-1 text-xs font-medium ${current ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
                                     {current ? 'Vigente' : 'Inactiva'}
@@ -2479,6 +2482,7 @@ export function RestaurantDashboard() {
         <PromotionForm
           restaurantId={selectedRestaurant.id}
           menuItems={menuItems}
+          categories={dishCategories}
           onClose={() => { setShowPromotionForm(false); loadPromotions(); }}
         />
       )}
@@ -3546,11 +3550,13 @@ function RestaurantOrderForm({
   );
 }
 
-function PromotionForm({ restaurantId, menuItems, onClose }: { restaurantId: string; menuItems: MenuItem[]; onClose: () => void }) {
+function PromotionForm({ restaurantId, menuItems, categories, onClose }: { restaurantId: string; menuItems: MenuItem[]; categories: DishCategory[]; onClose: () => void }) {
   const availableItems = menuItems.filter((item) => item.is_available);
+  const comboCategory = categories.find((category) => category.slug === 'combos');
   const [form, setForm] = useState({
     name: '',
     description: '',
+    categoryId: comboCategory?.id || categories[0]?.id || '',
     promotionType: 'combo' as RestaurantPromotion['promotion_type'],
     discountType: 'fixed_price' as RestaurantPromotion['discount_type'],
     discountValue: '',
@@ -3586,8 +3592,8 @@ function PromotionForm({ restaurantId, menuItems, onClose }: { restaurantId: str
     setError('');
 
     const discountValue = Number(form.discountValue);
-    if (!form.name.trim() || !Number.isFinite(discountValue) || discountValue < 0 || selectedMenuItems.length === 0) {
-      setError('Completa nombre, valor y al menos un producto.');
+    if (!form.name.trim() || !form.categoryId || !Number.isFinite(discountValue) || discountValue < 0 || selectedMenuItems.length === 0) {
+      setError('Completa nombre, categoria, valor y al menos un producto.');
       return;
     }
     if (form.promotionType === 'discount' && form.discountType === 'percentage' && discountValue > 100) {
@@ -3606,6 +3612,7 @@ function PromotionForm({ restaurantId, menuItems, onClose }: { restaurantId: str
         restaurant_id: restaurantId,
         name: form.name.trim(),
         description: form.description.trim() || null,
+        category_id: form.categoryId || null,
         promotion_type: form.promotionType,
         discount_type: form.discountType,
         discount_value: discountValue,
@@ -3657,6 +3664,12 @@ function PromotionForm({ restaurantId, menuItems, onClose }: { restaurantId: str
           <div className="grid gap-3 sm:grid-cols-2">
             <input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Nombre de la promocion" className="rounded-lg border border-gray-300 px-3 py-2 text-sm sm:col-span-2" />
             <textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Descripcion opcional" rows={2} className="rounded-lg border border-gray-300 px-3 py-2 text-sm sm:col-span-2" />
+            <select required value={form.categoryId} onChange={(event) => setForm({ ...form, categoryId: event.target.value })} className="rounded-lg border border-gray-300 px-3 py-2 text-sm sm:col-span-2">
+              <option value="" disabled>Selecciona una categoria</option>
+              {categories.map((category) => (
+                <option key={category.id} value={category.id}>{category.name}</option>
+              ))}
+            </select>
             <select value={form.promotionType} onChange={(event) => setPromotionType(event.target.value as RestaurantPromotion['promotion_type'])} className="rounded-lg border border-gray-300 px-3 py-2 text-sm">
               <option value="combo">Combo con precio especial</option>
               <option value="discount">Producto con descuento</option>
@@ -3706,7 +3719,7 @@ function PromotionForm({ restaurantId, menuItems, onClose }: { restaurantId: str
 
           <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
             <button type="button" onClick={onClose} className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50">Cancelar</button>
-            <button type="submit" disabled={loading || availableItems.length === 0} className="rounded-lg bg-orange-500 px-4 py-2 font-semibold text-white hover:bg-orange-600 disabled:opacity-50">
+            <button type="submit" disabled={loading || availableItems.length === 0 || categories.length === 0} className="rounded-lg bg-orange-500 px-4 py-2 font-semibold text-white hover:bg-orange-600 disabled:opacity-50">
               {loading ? 'Guardando...' : 'Guardar promocion'}
             </button>
           </div>

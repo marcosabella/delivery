@@ -25,8 +25,43 @@ import { useGeolocation } from '../hooks/useGeolocation';
 import { Auth } from './Auth';
 import { customerOrderStatusLabels, getCustomerOrderStatusMessage, getOrderNotificationPermissionState, OrderNotificationPermissionState, requestOrderNotificationPermission, shouldNotifyCustomerOrderStatus, showOrderBrowserNotification } from '../lib/orderStatusNotifications';
 
-type CartItem = MenuItem & { quantity: number };
+type MenuCartItem = MenuItem & { quantity: number; cartType?: 'menu_item' };
+type PromotionCartItem = {
+  id: string;
+  promotionId: string;
+  restaurant_id: string;
+  name: string;
+  description: string | null;
+  category: string | null;
+  price: number;
+  image_url: string | null;
+  quantity: number;
+  cartType: 'promotion';
+  itemsLabel: string;
+};
+type CartItem = MenuCartItem | PromotionCartItem;
 type AccountView = 'cart' | 'orders' | 'favorites' | 'profile';
+type PromotionItem = {
+  id: string;
+  menu_item_id: string;
+  quantity: number;
+  menu_item?: Pick<MenuItem, 'id' | 'name' | 'price' | 'category' | 'restaurant_id'> | null;
+};
+type RestaurantPromotion = {
+  id: string;
+  restaurant_id: string;
+  category_id: string | null;
+  category: string | null;
+  name: string;
+  description: string | null;
+  promotion_type: 'combo' | 'discount';
+  discount_type: 'fixed_price' | 'percentage' | 'amount';
+  discount_value: number;
+  starts_at: string | null;
+  ends_at: string | null;
+  is_active: boolean;
+  items?: PromotionItem[];
+};
 type CustomerOrder = Order & {
   order_items?: Array<{
     id: string;
@@ -44,6 +79,21 @@ type CustomerOrder = Order & {
 const CART_STORAGE_KEY = 'food-delivery-cart';
 const RESTAURANT_STORAGE_KEY = 'food-delivery-restaurant';
 
+function isPromotionCurrent(promotion: Pick<RestaurantPromotion, 'is_active' | 'starts_at' | 'ends_at'>) {
+  if (!promotion.is_active) return false;
+  const now = new Date();
+  if (promotion.starts_at && new Date(promotion.starts_at) > now) return false;
+  if (promotion.ends_at && new Date(promotion.ends_at) < now) return false;
+  return true;
+}
+
+function getDiscountedPrice(price: number, promotion: Pick<RestaurantPromotion, 'discount_type' | 'discount_value'>) {
+  const value = Number(promotion.discount_value || 0);
+  if (promotion.discount_type === 'fixed_price') return Math.max(0, value);
+  if (promotion.discount_type === 'percentage') return Math.max(0, price * (1 - value / 100));
+  return Math.max(0, price - value);
+}
+
 function readStoredValue<T>(key: string): T | null {
   try {
     const value = localStorage.getItem(key);
@@ -58,6 +108,7 @@ export function Landing() {
   const { getCurrentLocation, error: geoError, loading: geoLoading } = useGeolocation();
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [promotions, setPromotions] = useState<RestaurantPromotion[]>([]);
   const [dishCategories, setDishCategories] = useState<DishCategory[]>([]);
   const [query, setQuery] = useState('');
   const [categoryId, setCategoryId] = useState('all');
@@ -111,15 +162,29 @@ export function Landing() {
 
   useEffect(() => {
     async function loadCatalog() {
-      const [restaurantResult, menuResult, categoryResult] = await Promise.all([
+      const [restaurantResult, menuResult, categoryResult, promotionResult] = await Promise.all([
         supabase.from('restaurants').select('*').eq('is_active', true).order('name'),
         supabase.from('menu_items').select('*').eq('is_available', true).order('name'),
         supabase.from('dish_categories').select('*').eq('is_active', true).order('sort_order').order('name'),
+        supabase
+          .from('restaurant_promotions')
+          .select(`
+            *,
+            items:restaurant_promotion_items (
+              id,
+              menu_item_id,
+              quantity,
+              menu_item:menu_items (id, name, price, category, restaurant_id)
+            )
+          `)
+          .eq('is_active', true)
+          .order('created_at', { ascending: false }),
       ]);
 
       setRestaurants(restaurantResult.data || []);
       setMenuItems(menuResult.data || []);
       setDishCategories(categoryResult.data || []);
+      setPromotions((promotionResult.data || []) as unknown as RestaurantPromotion[]);
       setLoading(false);
     }
 
@@ -317,6 +382,39 @@ export function Landing() {
     () => new Map(restaurants.map((restaurant) => [restaurant.id, restaurant])),
     [restaurants],
   );
+  const activePromotions = useMemo(() => promotions.filter(isPromotionCurrent), [promotions]);
+  const comboPromotions = useMemo(() => activePromotions.filter((promotion) => promotion.promotion_type === 'combo'), [activePromotions]);
+  const discountPromotions = useMemo(() => activePromotions.filter((promotion) => promotion.promotion_type === 'discount'), [activePromotions]);
+
+  function getItemDiscountPromotion(itemId: string) {
+    return discountPromotions.find((promotion) =>
+      (promotion.items || []).some((promotionItem) => promotionItem.menu_item_id === itemId)
+    ) || null;
+  }
+
+  function getMenuItemPrice(item: MenuItem) {
+    const promotion = getItemDiscountPromotion(item.id);
+    return promotion ? getDiscountedPrice(item.price, promotion) : item.price;
+  }
+
+  function getComboBaseTotal(promotion: RestaurantPromotion) {
+    return (promotion.items || []).reduce(
+      (sum, item) => sum + Number(item.menu_item?.price || 0) * item.quantity,
+      0,
+    );
+  }
+
+  function getPromotionPrice(promotion: RestaurantPromotion) {
+    return promotion.discount_type === 'fixed_price'
+      ? Number(promotion.discount_value)
+      : getDiscountedPrice(getComboBaseTotal(promotion), promotion);
+  }
+
+  const promotedRestaurantIds = useMemo(
+    () => new Set(activePromotions.map((promotion) => promotion.restaurant_id)),
+    [activePromotions],
+  );
+  const featuredPromotions = useMemo(() => activePromotions.slice(0, 8), [activePromotions]);
 
   const normalizedQuery = query.trim().toLowerCase();
   const filteredItems = menuItems.filter((item) => {
@@ -327,7 +425,11 @@ export function Landing() {
       .join(' ')
       .toLowerCase();
     return matchesCategory && (!normalizedQuery || searchable.includes(normalizedQuery));
-  }).sort((a, b) => Number(favoriteMenuItemIds.has(b.id)) - Number(favoriteMenuItemIds.has(a.id)));
+  }).sort((a, b) => {
+    const promoDiff = Number(Boolean(getItemDiscountPromotion(b.id))) - Number(Boolean(getItemDiscountPromotion(a.id)));
+    const favoriteDiff = Number(favoriteMenuItemIds.has(b.id)) - Number(favoriteMenuItemIds.has(a.id));
+    return promoDiff || favoriteDiff || a.name.localeCompare(b.name);
+  });
 
   const filteredRestaurants = restaurants.filter((restaurant) => {
     if (!normalizedQuery) return true;
@@ -335,7 +437,11 @@ export function Landing() {
       (item) => item.restaurant_id === restaurant.id && [item.name, item.category].filter(Boolean).join(' ').toLowerCase().includes(normalizedQuery),
     );
     return `${restaurant.name} ${restaurant.description || ''}`.toLowerCase().includes(normalizedQuery) || hasMatchingDish;
-  }).sort((a, b) => Number(favoriteRestaurantIds.has(b.id)) - Number(favoriteRestaurantIds.has(a.id)));
+  }).sort((a, b) => {
+    const promoDiff = Number(promotedRestaurantIds.has(b.id)) - Number(promotedRestaurantIds.has(a.id));
+    const favoriteDiff = Number(favoriteRestaurantIds.has(b.id)) - Number(favoriteRestaurantIds.has(a.id));
+    return promoDiff || favoriteDiff || a.name.localeCompare(b.name);
+  });
   const favoriteRestaurants = restaurants
     .filter((restaurant) => favoriteRestaurantIds.has(restaurant.id))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -346,12 +452,65 @@ export function Landing() {
   function addToCart(item: MenuItem) {
     const restaurant = restaurantById.get(item.restaurant_id);
     if (!restaurant) return;
+    const pricedItem = { ...item, price: getMenuItemPrice(item) };
 
     const nextCart = cartRestaurant && cartRestaurant.id !== restaurant.id
-      ? [{ ...item, quantity: 1 }]
+      ? [{ ...pricedItem, quantity: 1 }]
       : cart.some((cartItem) => cartItem.id === item.id)
-        ? cart.map((cartItem) => cartItem.id === item.id ? { ...cartItem, quantity: cartItem.quantity + 1 } : cartItem)
-        : [...cart, { ...item, quantity: 1 }];
+        ? cart.map((cartItem) => cartItem.id === item.id ? { ...cartItem, price: pricedItem.price, quantity: cartItem.quantity + 1 } : cartItem)
+        : [...cart, { ...pricedItem, quantity: 1 }];
+
+    setCartRestaurant(restaurant);
+    setCart(nextCart);
+    localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(nextCart));
+    localStorage.setItem(RESTAURANT_STORAGE_KEY, JSON.stringify(restaurant));
+  }
+
+  function addPromotionToCart(promotion: RestaurantPromotion) {
+    const restaurant = restaurantById.get(promotion.restaurant_id);
+    if (!restaurant) return;
+
+    if (promotion.promotion_type === 'discount') {
+      const itemId = promotion.items?.[0]?.menu_item_id;
+      const item = itemId ? menuItems.find((menuItem) => menuItem.id === itemId) : null;
+      if (item) addToCart(item);
+      return;
+    }
+
+    const promotionKey = `promotion:${promotion.id}`;
+    const itemsLabel = (promotion.items || []).map((item) => `${item.quantity}x ${item.menu_item?.name || 'Producto'}`).join(', ');
+    const nextCart = cartRestaurant && cartRestaurant.id !== restaurant.id
+      ? [{
+          id: promotionKey,
+          promotionId: promotion.id,
+          restaurant_id: promotion.restaurant_id,
+          name: promotion.name,
+          description: promotion.description,
+          category: 'Combo',
+          price: getPromotionPrice(promotion),
+          image_url: null,
+          quantity: 1,
+          cartType: 'promotion' as const,
+          itemsLabel,
+        }]
+      : cart.some((cartItem) => cartItem.id === promotionKey)
+        ? cart.map((cartItem) => cartItem.id === promotionKey ? { ...cartItem, price: getPromotionPrice(promotion), quantity: cartItem.quantity + 1 } : cartItem)
+        : [
+            ...cart,
+            {
+              id: promotionKey,
+              promotionId: promotion.id,
+              restaurant_id: promotion.restaurant_id,
+              name: promotion.name,
+              description: promotion.description,
+              category: 'Combo',
+              price: getPromotionPrice(promotion),
+              image_url: null,
+              quantity: 1,
+              cartType: 'promotion' as const,
+              itemsLabel,
+            },
+          ];
 
     setCartRestaurant(restaurant);
     setCart(nextCart);
@@ -407,39 +566,25 @@ export function Landing() {
 
     setSubmittingOrder(true);
     setMessage('');
-    const { data: order, error: orderError } = await supabase
-      .from('orders')
-      .insert({
-        customer_id: profile.id,
-        restaurant_id: cartRestaurant.id,
-        total_amount: cartTotal,
-        delivery_method: deliveryMethod,
-        delivery_address: address,
-        status: 'pending',
+    const { error: orderError } = await supabase.functions.invoke('restaurant-orders', {
+      body: {
+        restaurantId: cartRestaurant.id,
+        customer: {
+          id: profile.id,
+          fullName: profile.full_name,
+        },
+        deliveryMethod,
+        deliveryAddress: address,
         latitude: deliveryMethod === 'delivery' ? deliveryLocation?.latitude ?? null : null,
         longitude: deliveryMethod === 'delivery' ? deliveryLocation?.longitude ?? null : null,
-      })
-      .select()
-      .single();
+        items: cart.map((item) => item.cartType === 'promotion'
+          ? { promotionId: item.promotionId, quantity: item.quantity }
+          : { menuItemId: item.id, quantity: item.quantity }),
+      },
+    });
 
-    if (orderError || !order) {
+    if (orderError) {
       setMessage('No se pudo crear el pedido. Intenta nuevamente.');
-      setSubmittingOrder(false);
-      return;
-    }
-
-    const { error: itemsError } = await supabase.from('order_items').insert(
-      cart.map((item) => ({
-        order_id: order.id,
-        menu_item_id: item.id,
-        quantity: item.quantity,
-        unit_price: item.price,
-        subtotal: item.price * item.quantity,
-      })),
-    );
-
-    if (itemsError) {
-      setMessage('El pedido fue creado, pero no se pudo guardar su detalle.');
       setSubmittingOrder(false);
       return;
     }
@@ -565,8 +710,13 @@ export function Landing() {
           <RestaurantView
             restaurant={selectedRestaurant}
             items={menuItems.filter((item) => item.restaurant_id === selectedRestaurant.id)}
+            promotions={activePromotions.filter((promotion) => promotion.restaurant_id === selectedRestaurant.id)}
             onBack={() => setSelectedRestaurant(null)}
             onAddToCart={addToCart}
+            onAddPromotionToCart={addPromotionToCart}
+            getMenuItemPrice={getMenuItemPrice}
+            getItemDiscountPromotion={getItemDiscountPromotion}
+            getPromotionPrice={getPromotionPrice}
             isFavoriteRestaurant={favoriteRestaurantIds.has(selectedRestaurant.id)}
             favoriteMenuItemIds={favoriteMenuItemIds}
             onToggleFavoriteRestaurant={() => void toggleFavoriteRestaurant(selectedRestaurant.id)}
@@ -594,17 +744,72 @@ export function Landing() {
           </div>
         </section>
 
+        {featuredPromotions.length > 0 && (
+          <section id="promociones" className="mx-auto max-w-7xl px-4 py-12 sm:px-6">
+            <div className="mb-7 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <p className="text-3xl font-black text-orange-600 sm:text-4xl">Promociones destacadas</p>
+              </div>
+              <a href="#restaurantes" className="text-sm font-semibold text-orange-600 hover:text-orange-700">Ver restaurantes</a>
+            </div>
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+              {featuredPromotions.map((promotion) => {
+                const restaurant = restaurantById.get(promotion.restaurant_id);
+                const isCombo = promotion.promotion_type === 'combo';
+                const promoItems = (promotion.items || []).map((item) => `${item.quantity}x ${item.menu_item?.name || 'Producto'}`).join(', ');
+                const discountItem = promotion.items?.[0]?.menu_item;
+                const discountPrice = discountItem ? getDiscountedPrice(Number(discountItem.price), promotion) : 0;
+                return (
+                  <article key={promotion.id} className="overflow-hidden rounded-2xl border border-orange-100 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg">
+                    <div className="bg-gradient-to-br from-orange-500 to-amber-500 p-4 text-white">
+                      <span className="rounded-full bg-white/20 px-2.5 py-1 text-xs font-bold">{promotion.category || (isCombo ? 'Combo' : 'Descuento')}</span>
+                      <h3 className="mt-3 line-clamp-2 text-lg font-black">{promotion.name}</h3>
+                      <p className="mt-1 truncate text-sm text-white/85">{restaurant?.name || 'Restaurante'}</p>
+                    </div>
+                    <div className="p-4">
+                      {promotion.description && <p className="line-clamp-2 text-sm text-slate-600">{promotion.description}</p>}
+                      <p className="mt-2 line-clamp-2 min-h-10 text-xs text-slate-500">{promoItems || 'Promocion disponible por tiempo limitado.'}</p>
+                      <div className="mt-4 flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-semibold uppercase text-slate-400">Precio promo</p>
+                          <p className="text-xl font-black text-orange-600">
+                            ${Number(isCombo ? getPromotionPrice(promotion) : discountPrice).toLocaleString('es-AR')}
+                          </p>
+                        </div>
+                        {isCombo ? (
+                          <button type="button" onClick={() => addPromotionToCart(promotion)} className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600">
+                            Agregar
+                          </button>
+                        ) : discountItem ? (
+                          <button type="button" onClick={() => addPromotionToCart(promotion)} className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600">
+                            Agregar
+                          </button>
+                        ) : (
+                          <button type="button" onClick={() => restaurant && openRestaurant(restaurant)} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800">
+                            Ver
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         <section id="restaurantes" className="mx-auto max-w-7xl px-4 py-14 sm:px-6">
           <div className="mb-7 flex items-end justify-between"><div><p className="font-semibold text-orange-600">Cerca tuyo</p><h2 className="mt-1 text-3xl font-bold">Restaurantes destacados</h2></div></div>
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {filteredRestaurants.slice(0, 6).map((restaurant) => {
               const isFavorite = favoriteRestaurantIds.has(restaurant.id);
+              const hasPromotion = promotedRestaurantIds.has(restaurant.id);
               return (
                 <article key={restaurant.id} className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg">
                   <div className="relative">
                     <button type="button" onClick={() => openRestaurant(restaurant)} className="block w-full text-left">
                       <div className="h-36 bg-gradient-to-br from-orange-100 to-amber-50">{restaurant.image_url ? <img src={restaurant.image_url} alt={restaurant.name} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center"><Store className="h-12 w-12 text-orange-300" /></div>}</div>
-                      <div className="p-5"><h3 className="text-lg font-bold">{restaurant.name}</h3><p className="mt-1 line-clamp-2 text-sm text-slate-500">{restaurant.description || 'Conoce todos los platos disponibles.'}</p><div className="mt-4 flex items-center justify-between gap-3 text-xs text-slate-500"><span className="flex min-w-0 items-center gap-1"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{restaurant.address || 'Retiro y delivery'}</span></span><span className="shrink-0 rounded-full bg-green-50 px-2 py-1 font-semibold text-green-700">Ver menu</span></div></div>
+                      <div className="p-5"><div className="flex items-start justify-between gap-2"><h3 className="text-lg font-bold">{restaurant.name}</h3>{hasPromotion && <span className="shrink-0 rounded-full bg-orange-100 px-2 py-1 text-xs font-bold text-orange-700">Promo</span>}</div><p className="mt-1 line-clamp-2 text-sm text-slate-500">{restaurant.description || 'Conoce todos los platos disponibles.'}</p><div className="mt-4 flex items-center justify-between gap-3 text-xs text-slate-500"><span className="flex min-w-0 items-center gap-1"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{restaurant.address || 'Retiro y delivery'}</span></span><span className="shrink-0 rounded-full bg-green-50 px-2 py-1 font-semibold text-green-700">Ver menu</span></div></div>
                     </button>
                     <button type="button" onClick={() => void toggleFavoriteRestaurant(restaurant.id)} className={`absolute right-3 top-3 rounded-full p-2 shadow-sm transition ${isFavorite ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-white text-slate-500 hover:bg-red-50 hover:text-red-500'}`} aria-label={isFavorite ? 'Quitar restaurante de favoritos' : 'Agregar restaurante a favoritos'} title={isFavorite ? 'Quitar de favoritos' : 'Agregar a favoritos'}>
                       <Heart className={`h-4 w-4 ${isFavorite ? 'fill-current' : ''}`} />
@@ -623,7 +828,41 @@ export function Landing() {
               <button onClick={() => setCategoryId('all')} className={`relative h-52 w-64 shrink-0 snap-start overflow-hidden rounded-2xl text-left transition ${categoryId === 'all' ? 'ring-4 ring-orange-400' : 'hover:-translate-y-1 hover:shadow-lg'}`}><div className="absolute inset-0 bg-gradient-to-br from-orange-400 to-amber-600" /><div className="absolute inset-0 bg-black/15" /><div className="absolute inset-x-0 bottom-0 p-5 text-white"><h3 className="text-xl font-bold">Todas las categorias</h3><p className="mt-1 text-sm text-white/85">Mira todos los platos disponibles.</p></div></button>
               {dishCategories.map((category) => <button key={category.id} onClick={() => setCategoryId(category.id)} className={`group relative h-52 w-64 shrink-0 snap-start overflow-hidden rounded-2xl bg-slate-800 text-left transition ${categoryId === category.id ? 'ring-4 ring-orange-400' : 'hover:-translate-y-1 hover:shadow-lg'}`}>{category.image_url ? <img src={category.image_url} alt={category.name} className="absolute inset-0 h-full w-full object-cover transition duration-300 group-hover:scale-105" /> : <div className="absolute inset-0 bg-gradient-to-br from-slate-700 to-slate-900" />}<div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent" /><div className="absolute inset-x-0 bottom-0 p-5 text-white"><h3 className="text-xl font-bold">{category.name}</h3>{category.description && <p className="mt-1 line-clamp-2 text-sm text-white/85">{category.description}</p>}</div></button>)}
             </div>
-            {loading ? <div className="py-16 text-center text-slate-500">Cargando catalogo...</div> : filteredItems.length === 0 ? <div className="rounded-2xl bg-slate-50 py-16 text-center"><Search className="mx-auto h-10 w-10 text-slate-300" /><p className="mt-3 text-slate-500">No encontramos resultados para tu busqueda.</p></div> : <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">{filteredItems.slice(0, 12).map((item) => { const restaurant = restaurantById.get(item.restaurant_id); const isFavorite = favoriteMenuItemIds.has(item.id); return <article key={item.id} className="group overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm hover:shadow-lg"><div className="relative h-40 overflow-hidden bg-slate-100">{item.image_url ? <img src={item.image_url} alt={item.name} className="h-full w-full object-cover transition duration-300 group-hover:scale-105" /> : <div className="flex h-full items-center justify-center"><UtensilsCrossed className="h-10 w-10 text-slate-300" /></div>}<button type="button" onClick={() => void toggleFavoriteMenuItem(item.id)} className={`absolute right-3 top-3 rounded-full p-2 shadow-sm transition ${isFavorite ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-white text-slate-500 hover:bg-red-50 hover:text-red-500'}`} aria-label={isFavorite ? 'Quitar producto de favoritos' : 'Agregar producto a favoritos'} title={isFavorite ? 'Quitar de favoritos' : 'Agregar a favoritos'}><Heart className={`h-4 w-4 ${isFavorite ? 'fill-current' : ''}`} /></button></div><div className="p-4"><p className="text-xs font-semibold uppercase tracking-wide text-orange-600">{restaurant?.name}</p><h3 className="mt-1 font-bold">{item.name}</h3><p className="mt-1 line-clamp-2 min-h-10 text-sm text-slate-500">{item.description || item.category}</p><div className="mt-4 flex items-center justify-between"><span className="text-xl font-black">${Number(item.price).toLocaleString('es-AR')}</span><button onClick={() => addToCart(item)} className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600">Agregar</button></div></div></article>; })}</div>}
+            {loading ? (
+              <div className="py-16 text-center text-slate-500">Cargando catalogo...</div>
+            ) : filteredItems.length === 0 ? (
+              <div className="rounded-2xl bg-slate-50 py-16 text-center"><Search className="mx-auto h-10 w-10 text-slate-300" /><p className="mt-3 text-slate-500">No encontramos resultados para tu busqueda.</p></div>
+            ) : (
+              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {filteredItems.slice(0, 12).map((item) => {
+                  const restaurant = restaurantById.get(item.restaurant_id);
+                  const isFavorite = favoriteMenuItemIds.has(item.id);
+                  const promo = getItemDiscountPromotion(item.id);
+                  const price = getMenuItemPrice(item);
+                  return (
+                    <article key={item.id} className="group overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm hover:shadow-lg">
+                      <div className="relative h-40 overflow-hidden bg-slate-100">
+                        {item.image_url ? <img src={item.image_url} alt={item.name} className="h-full w-full object-cover transition duration-300 group-hover:scale-105" /> : <div className="flex h-full items-center justify-center"><UtensilsCrossed className="h-10 w-10 text-slate-300" /></div>}
+                        {promo && <span className="absolute left-3 top-3 rounded-full bg-orange-500 px-2.5 py-1 text-xs font-bold text-white">Promo</span>}
+                        <button type="button" onClick={() => void toggleFavoriteMenuItem(item.id)} className={`absolute right-3 top-3 rounded-full p-2 shadow-sm transition ${isFavorite ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-white text-slate-500 hover:bg-red-50 hover:text-red-500'}`} aria-label={isFavorite ? 'Quitar producto de favoritos' : 'Agregar producto a favoritos'} title={isFavorite ? 'Quitar de favoritos' : 'Agregar a favoritos'}><Heart className={`h-4 w-4 ${isFavorite ? 'fill-current' : ''}`} /></button>
+                      </div>
+                      <div className="p-4">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-orange-600">{restaurant?.name}</p>
+                        <h3 className="mt-1 font-bold">{item.name}</h3>
+                        <p className="mt-1 line-clamp-2 min-h-10 text-sm text-slate-500">{item.description || item.category}</p>
+                        <div className="mt-4 flex items-center justify-between gap-3">
+                          <div>
+                            {promo && <p className="text-xs text-slate-400 line-through">${Number(item.price).toLocaleString('es-AR')}</p>}
+                            <span className="text-xl font-black text-orange-600">${Number(price).toLocaleString('es-AR')}</span>
+                          </div>
+                          <button onClick={() => addToCart(item)} className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600">Agregar</button>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </section>
 
@@ -634,7 +873,7 @@ export function Landing() {
 
       <footer className="bg-slate-900 px-4 py-10 text-center text-sm text-slate-400"><p className="font-semibold text-white">Food Delivery</p><p className="mt-2">Restaurantes y platos en un solo lugar.</p></footer>
 
-      {showCart && <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/50" onClick={() => setShowCart(false)}><aside className="flex h-full w-full max-w-md flex-col bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}><div className="flex items-center justify-between border-b p-5"><div><h2 className="text-xl font-bold">Tu carrito</h2><p className="text-sm text-slate-500">{cartRestaurant?.name || 'Todavia no agregaste platos'}</p></div><div className="flex items-center gap-1">{cart.length > 0 && <button onClick={clearCart} className="rounded-lg px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50">Vaciar</button>}<button onClick={() => setShowCart(false)} className="rounded-lg p-2 hover:bg-slate-100"><X className="h-5 w-5" /></button></div></div><div className="flex-1 space-y-3 overflow-y-auto p-5">{cart.map((item) => <div key={item.id} className="flex items-center gap-3 rounded-xl border p-3"><div className="min-w-0 flex-1"><p className="truncate font-semibold">{item.name}</p><p className="text-sm text-orange-600">${Number(item.price).toLocaleString('es-AR')}</p></div><div className="flex items-center gap-2"><button onClick={() => updateQuantity(item.id, item.quantity - 1)} className="h-8 w-8 rounded-lg bg-slate-100">-</button><span className="w-5 text-center">{item.quantity}</span><button onClick={() => updateQuantity(item.id, item.quantity + 1)} className="h-8 w-8 rounded-lg bg-slate-100">+</button><button onClick={() => updateQuantity(item.id, 0)} className="ml-1 rounded-lg p-2 text-red-600 hover:bg-red-50" aria-label={`Eliminar ${item.name}`} title="Eliminar"><Trash2 className="h-4 w-4" /></button></div></div>)}{cart.length === 0 && <div className="py-16 text-center text-slate-400"><ShoppingBag className="mx-auto h-12 w-12" /><p className="mt-3">Tu carrito esta vacio</p></div>}{user && cart.length > 0 && <div className="space-y-3 rounded-xl bg-slate-50 p-4"><div className="grid grid-cols-2 gap-2"><button onClick={() => setDeliveryMethod('delivery')} className={`rounded-lg border p-2 text-sm font-semibold ${deliveryMethod === 'delivery' ? 'border-orange-500 bg-orange-50 text-orange-700' : 'border-slate-200'}`}>Delivery</button><button onClick={() => setDeliveryMethod('pickup')} className={`rounded-lg border p-2 text-sm font-semibold ${deliveryMethod === 'pickup' ? 'border-orange-500 bg-orange-50 text-orange-700' : 'border-slate-200'}`}>Retiro</button></div>{deliveryMethod === 'delivery' && <div className="space-y-2"><textarea value={deliveryAddress} onChange={(event) => updateDeliveryAddress(event.target.value)} rows={3} placeholder="Direccion de entrega" className="w-full rounded-lg border border-slate-300 p-3 text-sm outline-none focus:border-orange-500" /><button type="button" onClick={() => void geolocateDeliveryAddress()} disabled={geoLoading} className="flex w-full items-center justify-center gap-2 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-sm font-semibold text-orange-700 hover:bg-orange-100 disabled:opacity-50"><MapPin className="h-4 w-4" />{geoLoading ? 'Ubicando...' : 'Geolocalizar'}</button>{deliveryLocation && <p className="text-xs font-medium text-emerald-600">Ubicacion GPS detectada.</p>}{geoError && <p className="text-xs text-red-600">{geoError}</p>}</div>}{message && <p className="text-sm text-red-600">{message}</p>}</div>}</div><div className="border-t p-5"><div className="mb-4 flex justify-between text-lg font-bold"><span>Total</span><span>${cartTotal.toLocaleString('es-AR')}</span></div>{user ? <button disabled={!cart.length || submittingOrder} onClick={handleCheckout} className="w-full rounded-xl bg-orange-500 py-3 font-bold text-white hover:bg-orange-600 disabled:opacity-40">{submittingOrder ? 'Confirmando...' : 'Confirmar pedido'}</button> : <button disabled={!cart.length} onClick={() => setShowAuth(true)} className="w-full rounded-xl bg-orange-500 py-3 font-bold text-white hover:bg-orange-600 disabled:opacity-40">Ingresar para hacer el pedido</button>}</div></aside></div>}
+      {showCart && <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/50" onClick={() => setShowCart(false)}><aside className="flex h-full w-full max-w-md flex-col bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}><div className="flex items-center justify-between border-b p-5"><div><h2 className="text-xl font-bold">Tu carrito</h2><p className="text-sm text-slate-500">{cartRestaurant?.name || 'Todavia no agregaste platos'}</p></div><div className="flex items-center gap-1">{cart.length > 0 && <button onClick={clearCart} className="rounded-lg px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50">Vaciar</button>}<button onClick={() => setShowCart(false)} className="rounded-lg p-2 hover:bg-slate-100"><X className="h-5 w-5" /></button></div></div><div className="flex-1 space-y-3 overflow-y-auto p-5">{cart.map((item) => <div key={item.id} className="flex items-center gap-3 rounded-xl border p-3"><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><p className="truncate font-semibold">{item.name}</p>{item.cartType === 'promotion' && <span className="shrink-0 rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-bold text-orange-700">Combo</span>}</div>{item.cartType === 'promotion' && <p className="mt-1 line-clamp-2 text-xs text-slate-500">{item.itemsLabel}</p>}<p className="text-sm text-orange-600">${Number(item.price).toLocaleString('es-AR')}</p></div><div className="flex items-center gap-2"><button onClick={() => updateQuantity(item.id, item.quantity - 1)} className="h-8 w-8 rounded-lg bg-slate-100">-</button><span className="w-5 text-center">{item.quantity}</span><button onClick={() => updateQuantity(item.id, item.quantity + 1)} className="h-8 w-8 rounded-lg bg-slate-100">+</button><button onClick={() => updateQuantity(item.id, 0)} className="ml-1 rounded-lg p-2 text-red-600 hover:bg-red-50" aria-label={`Eliminar ${item.name}`} title="Eliminar"><Trash2 className="h-4 w-4" /></button></div></div>)}{cart.length === 0 && <div className="py-16 text-center text-slate-400"><ShoppingBag className="mx-auto h-12 w-12" /><p className="mt-3">Tu carrito esta vacio</p></div>}{user && cart.length > 0 && <div className="space-y-3 rounded-xl bg-slate-50 p-4"><div className="grid grid-cols-2 gap-2"><button onClick={() => setDeliveryMethod('delivery')} className={`rounded-lg border p-2 text-sm font-semibold ${deliveryMethod === 'delivery' ? 'border-orange-500 bg-orange-50 text-orange-700' : 'border-slate-200'}`}>Delivery</button><button onClick={() => setDeliveryMethod('pickup')} className={`rounded-lg border p-2 text-sm font-semibold ${deliveryMethod === 'pickup' ? 'border-orange-500 bg-orange-50 text-orange-700' : 'border-slate-200'}`}>Retiro</button></div>{deliveryMethod === 'delivery' && <div className="space-y-2"><textarea value={deliveryAddress} onChange={(event) => updateDeliveryAddress(event.target.value)} rows={3} placeholder="Direccion de entrega" className="w-full rounded-lg border border-slate-300 p-3 text-sm outline-none focus:border-orange-500" /><button type="button" onClick={() => void geolocateDeliveryAddress()} disabled={geoLoading} className="flex w-full items-center justify-center gap-2 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-sm font-semibold text-orange-700 hover:bg-orange-100 disabled:opacity-50"><MapPin className="h-4 w-4" />{geoLoading ? 'Ubicando...' : 'Geolocalizar'}</button>{deliveryLocation && <p className="text-xs font-medium text-emerald-600">Ubicacion GPS detectada.</p>}{geoError && <p className="text-xs text-red-600">{geoError}</p>}</div>}{message && <p className="text-sm text-red-600">{message}</p>}</div>}</div><div className="border-t p-5"><div className="mb-4 flex justify-between text-lg font-bold"><span>Total</span><span>${cartTotal.toLocaleString('es-AR')}</span></div>{user ? <button disabled={!cart.length || submittingOrder} onClick={handleCheckout} className="w-full rounded-xl bg-orange-500 py-3 font-bold text-white hover:bg-orange-600 disabled:opacity-40">{submittingOrder ? 'Confirmando...' : 'Confirmar pedido'}</button> : <button disabled={!cart.length} onClick={() => setShowAuth(true)} className="w-full rounded-xl bg-orange-500 py-3 font-bold text-white hover:bg-orange-600 disabled:opacity-40">Ingresar para hacer el pedido</button>}</div></aside></div>}
       {showAuth && <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/60 p-4"><div className="flex min-h-full items-center justify-center"><div className="relative w-full max-w-md"><button onClick={() => setShowAuth(false)} className="absolute right-3 top-3 z-10 rounded-lg p-2 text-slate-500 hover:bg-slate-100" aria-label="Cerrar"><X className="h-5 w-5" /></button><Auth embedded /></div></div></div>}
     </div>
   );
@@ -643,15 +882,20 @@ export function Landing() {
 interface RestaurantViewProps {
   restaurant: Restaurant;
   items: MenuItem[];
+  promotions: RestaurantPromotion[];
   onBack: () => void;
   onAddToCart: (item: MenuItem) => void;
+  onAddPromotionToCart: (promotion: RestaurantPromotion) => void;
+  getMenuItemPrice: (item: MenuItem) => number;
+  getItemDiscountPromotion: (itemId: string) => RestaurantPromotion | null;
+  getPromotionPrice: (promotion: RestaurantPromotion) => number;
   isFavoriteRestaurant: boolean;
   favoriteMenuItemIds: Set<string>;
   onToggleFavoriteRestaurant: () => void;
   onToggleFavoriteMenuItem: (itemId: string) => void;
 }
 
-function RestaurantView({ restaurant, items, onBack, onAddToCart, isFavoriteRestaurant, favoriteMenuItemIds, onToggleFavoriteRestaurant, onToggleFavoriteMenuItem }: RestaurantViewProps) {
+function RestaurantView({ restaurant, items, promotions, onBack, onAddToCart, onAddPromotionToCart, getMenuItemPrice, getItemDiscountPromotion, getPromotionPrice, isFavoriteRestaurant, favoriteMenuItemIds, onToggleFavoriteRestaurant, onToggleFavoriteMenuItem }: RestaurantViewProps) {
   return (
     <section className="mx-auto min-h-[70vh] max-w-7xl px-4 py-10 sm:px-6">
       <button onClick={onBack} className="mb-6 flex items-center gap-2 text-sm font-semibold text-slate-600 hover:text-orange-600">
@@ -685,6 +929,37 @@ function RestaurantView({ restaurant, items, onBack, onAddToCart, isFavoriteRest
         </div>
       </div>
 
+      {promotions.length > 0 && (
+        <section className="mt-8 rounded-2xl border border-orange-100 bg-white p-5 shadow-sm">
+          <div className="mb-4">
+            <p className="font-semibold text-orange-600">Promociones vigentes</p>
+            <h2 className="mt-1 text-2xl font-bold">Destacados de {restaurant.name}</h2>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            {promotions.map((promotion) => {
+              const isCombo = promotion.promotion_type === 'combo';
+              const itemsLabel = (promotion.items || []).map((item) => `${item.quantity}x ${item.menu_item?.name || 'Producto'}`).join(', ');
+              return (
+                <div key={promotion.id} className="rounded-xl bg-orange-50 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <span className="rounded-full bg-orange-500 px-2.5 py-1 text-xs font-bold text-white">{promotion.category || (isCombo ? 'Combo' : 'Descuento')}</span>
+                      <h3 className="mt-2 font-bold text-slate-900">{promotion.name}</h3>
+                    </div>
+                    <p className="text-lg font-black text-orange-700">${Number(getPromotionPrice(promotion)).toLocaleString('es-AR')}</p>
+                  </div>
+                  {promotion.description && <p className="mt-2 text-sm text-slate-600">{promotion.description}</p>}
+                  <p className="mt-2 text-xs text-slate-500">{itemsLabel || 'Promocion por tiempo limitado.'}</p>
+                  <button type="button" onClick={() => onAddPromotionToCart(promotion)} className="mt-4 w-full rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600">
+                    Agregar al carrito
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       <div className="mb-7 mt-10">
         <p className="font-semibold text-orange-600">Todos los platos</p>
         <h2 className="mt-1 text-3xl font-bold">Que ofrece {restaurant.name}</h2>
@@ -697,29 +972,37 @@ function RestaurantView({ restaurant, items, onBack, onAddToCart, isFavoriteRest
         </div>
       ) : (
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {items.map((item) => (
-            <article key={item.id} className="group overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm hover:shadow-lg">
-              <div className="relative h-40 overflow-hidden bg-slate-100">
-                {item.image_url ? (
-                  <img src={item.image_url} alt={item.name} className="h-full w-full object-cover transition duration-300 group-hover:scale-105" />
-                ) : (
-                  <div className="flex h-full items-center justify-center"><UtensilsCrossed className="h-10 w-10 text-slate-300" /></div>
-                )}
-                <button type="button" onClick={() => onToggleFavoriteMenuItem(item.id)} className={`absolute right-3 top-3 rounded-full p-2 shadow-sm transition ${favoriteMenuItemIds.has(item.id) ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-white text-slate-500 hover:bg-red-50 hover:text-red-500'}`} aria-label={favoriteMenuItemIds.has(item.id) ? 'Quitar producto de favoritos' : 'Agregar producto a favoritos'} title={favoriteMenuItemIds.has(item.id) ? 'Quitar de favoritos' : 'Agregar a favoritos'}>
-                  <Heart className={`h-4 w-4 ${favoriteMenuItemIds.has(item.id) ? 'fill-current' : ''}`} />
-                </button>
-              </div>
-              <div className="p-4">
-                {item.category && <p className="text-xs font-semibold uppercase tracking-wide text-orange-600">{item.category}</p>}
-                <h3 className="mt-1 font-bold">{item.name}</h3>
-                <p className="mt-1 line-clamp-2 min-h-10 text-sm text-slate-500">{item.description || item.category}</p>
-                <div className="mt-4 flex items-center justify-between gap-3">
-                  <span className="text-xl font-black">${Number(item.price).toLocaleString('es-AR')}</span>
-                  <button onClick={() => onAddToCart(item)} className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600">Agregar</button>
+          {items.map((item) => {
+            const promo = getItemDiscountPromotion(item.id);
+            const price = getMenuItemPrice(item);
+            return (
+              <article key={item.id} className="group overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm hover:shadow-lg">
+                <div className="relative h-40 overflow-hidden bg-slate-100">
+                  {item.image_url ? (
+                    <img src={item.image_url} alt={item.name} className="h-full w-full object-cover transition duration-300 group-hover:scale-105" />
+                  ) : (
+                    <div className="flex h-full items-center justify-center"><UtensilsCrossed className="h-10 w-10 text-slate-300" /></div>
+                  )}
+                  {promo && <span className="absolute left-3 top-3 rounded-full bg-orange-500 px-2.5 py-1 text-xs font-bold text-white">Promo</span>}
+                  <button type="button" onClick={() => onToggleFavoriteMenuItem(item.id)} className={`absolute right-3 top-3 rounded-full p-2 shadow-sm transition ${favoriteMenuItemIds.has(item.id) ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-white text-slate-500 hover:bg-red-50 hover:text-red-500'}`} aria-label={favoriteMenuItemIds.has(item.id) ? 'Quitar producto de favoritos' : 'Agregar producto a favoritos'} title={favoriteMenuItemIds.has(item.id) ? 'Quitar de favoritos' : 'Agregar a favoritos'}>
+                    <Heart className={`h-4 w-4 ${favoriteMenuItemIds.has(item.id) ? 'fill-current' : ''}`} />
+                  </button>
                 </div>
-              </div>
-            </article>
-          ))}
+                <div className="p-4">
+                  {item.category && <p className="text-xs font-semibold uppercase tracking-wide text-orange-600">{item.category}</p>}
+                  <h3 className="mt-1 font-bold">{item.name}</h3>
+                  <p className="mt-1 line-clamp-2 min-h-10 text-sm text-slate-500">{item.description || item.category}</p>
+                  <div className="mt-4 flex items-center justify-between gap-3">
+                    <div>
+                      {promo && <p className="text-xs text-slate-400 line-through">${Number(item.price).toLocaleString('es-AR')}</p>}
+                      <span className="text-xl font-black text-orange-600">${Number(price).toLocaleString('es-AR')}</span>
+                    </div>
+                    <button onClick={() => onAddToCart(item)} className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600">Agregar</button>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
         </div>
       )}
     </section>
@@ -772,7 +1055,14 @@ function CartView({ cart, restaurant, total, deliveryMethod, deliveryAddress, me
           <div className="space-y-3">
             {cart.map((item) => (
               <article key={item.id} className="flex flex-wrap items-center gap-4 rounded-2xl bg-white p-4 shadow-sm">
-                <div className="min-w-0 flex-1"><p className="font-bold">{item.name}</p><p className="text-sm text-orange-600">${Number(item.price).toLocaleString('es-AR')}</p></div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="font-bold">{item.name}</p>
+                    {item.cartType === 'promotion' && <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-bold text-orange-700">Combo</span>}
+                  </div>
+                  {item.cartType === 'promotion' && <p className="mt-1 line-clamp-2 text-xs text-slate-500">{item.itemsLabel}</p>}
+                  <p className="text-sm text-orange-600">${Number(item.price).toLocaleString('es-AR')}</p>
+                </div>
                 <div className="flex items-center gap-2"><button onClick={() => onUpdateQuantity(item.id, item.quantity - 1)} className="h-9 w-9 rounded-lg bg-slate-100">-</button><span className="w-6 text-center font-semibold">{item.quantity}</span><button onClick={() => onUpdateQuantity(item.id, item.quantity + 1)} className="h-9 w-9 rounded-lg bg-slate-100">+</button></div>
                 <button onClick={() => onUpdateQuantity(item.id, 0)} className="rounded-lg p-2 text-red-600 hover:bg-red-50" aria-label={`Eliminar ${item.name}`}><Trash2 className="h-5 w-5" /></button>
               </article>
