@@ -3,11 +3,51 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    --app-safe-top: env(safe-area-inset-top, 0px);
+    --app-safe-right: env(safe-area-inset-right, 0px);
+    --app-safe-bottom: env(safe-area-inset-bottom, 0px);
+    --app-safe-left: env(safe-area-inset-left, 0px);
+  }
+
   html {
     font-size: 14px;
   }
 
   body {
     font-size: 1rem;
+    padding: 0;
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+}
+
+@layer utilities {
+  header.sticky {
+    padding-top: var(--app-safe-top);
+  }
+
+  aside.fixed.inset-y-0 {
+    padding-top: var(--app-safe-top);
+    padding-bottom: var(--app-safe-bottom);
+  }
+
+  .fixed.inset-x-0.bottom-0 {
+    padding-bottom: max(0.75rem, var(--app-safe-bottom));
+  }
+
+  .safe-top {
+    padding-top: var(--app-safe-top);
+  }
+
+  .safe-bottom {
+    padding-bottom: var(--app-safe-bottom);
+  }
+
+  .safe-x {
+    padding-left: var(--app-safe-left);
+    padding-right: var(--app-safe-right);
   }
 }

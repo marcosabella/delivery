@@ -1,3 +1,5 @@
+import { Capacitor } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
 import { Order, supabase } from './supabase';
 
 export const customerOrderStatusLabels: Record<Order['status'], string> = {
@@ -33,6 +35,10 @@ export function getCustomerOrderStatusMessage(order: Pick<Order, 'id' | 'status'
 export type OrderNotificationPermissionState = NotificationPermission | 'unsupported' | 'registration_failed';
 
 const vapidPublicKey = (import.meta.env.VITE_VAPID_PUBLIC_KEY as string | undefined)?.trim();
+
+function supportsNativeNotifications() {
+  return Capacitor.isNativePlatform();
+}
 
 function supportsPushNotifications() {
   return typeof window !== 'undefined'
@@ -71,11 +77,20 @@ function subscriptionUsesApplicationServerKey(subscription: PushSubscription, ap
 }
 
 export function getOrderNotificationPermissionState(): OrderNotificationPermissionState {
+  if (supportsNativeNotifications()) return 'default';
   if (!supportsPushNotifications()) return 'unsupported';
   return Notification.permission;
 }
 
 export async function requestOrderNotificationPermission(): Promise<OrderNotificationPermissionState> {
+  if (supportsNativeNotifications()) {
+    const current = await LocalNotifications.checkPermissions();
+    if (current.display === 'granted') return 'granted';
+
+    const requested = await LocalNotifications.requestPermissions();
+    return requested.display === 'granted' ? 'granted' : 'denied';
+  }
+
   if (!supportsPushNotifications()) return 'unsupported';
   if (Notification.permission === 'default') {
     await Notification.requestPermission();
@@ -132,6 +147,24 @@ export async function notifyCustomerOrderStatus(orderId: string) {
 }
 
 export async function showOrderBrowserNotification(order: Pick<Order, 'id' | 'status'>) {
+  if (supportsNativeNotifications()) {
+    if (!shouldNotifyCustomerOrderStatus(order.status)) return;
+
+    const permission = await LocalNotifications.checkPermissions();
+    if (permission.display !== 'granted') return;
+
+    await LocalNotifications.schedule({
+      notifications: [{
+        id: Math.abs(order.id.split('').reduce((sum, character) => sum + character.charCodeAt(0), 0)),
+        title: 'Estado de tu pedido',
+        body: getCustomerOrderStatusMessage(order),
+        schedule: { at: new Date(Date.now() + 100) },
+        extra: { orderId: order.id, status: order.status },
+      }],
+    });
+    return;
+  }
+
   if (typeof window === 'undefined' || !('Notification' in window)) return;
   if (Notification.permission !== 'granted') return;
   if (!shouldNotifyCustomerOrderStatus(order.status)) return;
