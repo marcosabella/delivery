@@ -24,6 +24,27 @@ type WaiterAssignment = {
   restaurant?: Restaurant;
 };
 
+type RestaurantPromotionItem = {
+  id: string;
+  menu_item_id: string;
+  quantity: number;
+  menu_item?: Pick<MenuItem, 'id' | 'name' | 'price' | 'category'> | null;
+};
+
+type RestaurantPromotion = {
+  id: string;
+  restaurant_id: string;
+  name: string;
+  description: string | null;
+  promotion_type: 'combo' | 'discount';
+  discount_type: 'fixed_price' | 'percentage' | 'amount';
+  discount_value: number;
+  starts_at: string | null;
+  ends_at: string | null;
+  is_active: boolean;
+  items?: RestaurantPromotionItem[];
+};
+
 const moneyFormatter = new Intl.NumberFormat('es-AR', {
   style: 'currency',
   currency: 'ARS',
@@ -42,12 +63,30 @@ const statusLabels: Record<Order['status'], string> = {
   cancelled: 'Cancelado',
 };
 
+function isPromotionCurrent(promotion: Pick<RestaurantPromotion, 'is_active' | 'starts_at' | 'ends_at'>) {
+  if (!promotion.is_active) return false;
+
+  const now = new Date();
+  if (promotion.starts_at && new Date(promotion.starts_at) > now) return false;
+  if (promotion.ends_at && new Date(promotion.ends_at) < now) return false;
+
+  return true;
+}
+
+function getDiscountedPrice(price: number, promotion: Pick<RestaurantPromotion, 'discount_type' | 'discount_value'>) {
+  const discountValue = Number(promotion.discount_value || 0);
+  if (promotion.discount_type === 'fixed_price') return Math.max(0, discountValue);
+  if (promotion.discount_type === 'percentage') return Math.max(0, price * (1 - discountValue / 100));
+  return Math.max(0, price - discountValue);
+}
+
 export function WaiterDashboard() {
   const { profile, signOut } = useAuth();
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [selectedRestaurant, setSelectedRestaurant] = useState<Restaurant | null>(null);
   const [tables, setTables] = useState<RestaurantTable[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [promotions, setPromotions] = useState<RestaurantPromotion[]>([]);
   const [orders, setOrders] = useState<TableOrder[]>([]);
   const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
@@ -67,7 +106,7 @@ export function WaiterDashboard() {
 
   useEffect(() => {
     if (!selectedRestaurant) return;
-    void Promise.all([loadTables(), loadMenuItems(), loadOrders()]);
+    void Promise.all([loadTables(), loadMenuItems(), loadPromotions(), loadOrders()]);
   }, [selectedRestaurant]);
 
   useEffect(() => {
@@ -86,7 +125,12 @@ export function WaiterDashboard() {
   const selectedTable = tables.find((table) => table.id === selectedTableId) || null;
   const selectedOrder = selectedTableId ? getActiveOrderForTable(selectedTableId) : null;
   const availableItems = menuItems.filter((item) => item.is_available);
-  const total = availableItems.reduce((sum, item) => sum + item.price * (quantities[item.id] || 0), 0);
+  const activePromotions = promotions.filter(isPromotionCurrent);
+  const comboPromotions = activePromotions.filter((promotion) => promotion.promotion_type === 'combo');
+  const discountPromotions = activePromotions.filter((promotion) => promotion.promotion_type === 'discount');
+  const selectedPromotions = comboPromotions.filter((promotion) => (quantities[`promotion:${promotion.id}`] || 0) > 0);
+  const total = availableItems.reduce((sum, item) => sum + getItemOrderPrice(item) * (quantities[item.id] || 0), 0)
+    + selectedPromotions.reduce((sum, promotion) => sum + getPromotionOrderPrice(promotion) * (quantities[`promotion:${promotion.id}`] || 0), 0);
   const selectedItemsCount = Object.values(quantities).reduce((sum, quantity) => sum + quantity, 0);
   const selectedMenuItems = availableItems.filter((item) => (quantities[item.id] || 0) > 0);
   const normalizedMenuSearch = menuSearch.trim().toLowerCase();
@@ -96,6 +140,13 @@ export function WaiterDashboard() {
         return searchableText.includes(normalizedMenuSearch);
       })
     : availableItems;
+  const visibleComboPromotions = normalizedMenuSearch
+    ? comboPromotions.filter((promotion) => {
+        const comboItems = (promotion.items || []).map((item) => item.menu_item?.name || '').join(' ');
+        const searchableText = `${promotion.name} ${promotion.description || ''} ${comboItems}`.toLowerCase();
+        return searchableText.includes(normalizedMenuSearch);
+      })
+    : comboPromotions;
 
   const menuGroups = useMemo(() => {
     const groups = new Map<string, MenuItem[]>();
@@ -105,6 +156,30 @@ export function WaiterDashboard() {
     }
     return [...groups.entries()];
   }, [visibleMenuItems]);
+
+  function getItemDiscountPromotion(itemId: string) {
+    return discountPromotions.find((promotion) =>
+      (promotion.items || []).some((item) => item.menu_item_id === itemId)
+    ) || null;
+  }
+
+  function getItemOrderPrice(item: MenuItem) {
+    const promotion = getItemDiscountPromotion(item.id);
+    return promotion ? getDiscountedPrice(item.price, promotion) : item.price;
+  }
+
+  function getComboBaseTotal(promotion: RestaurantPromotion) {
+    return (promotion.items || []).reduce(
+      (sum, item) => sum + Number(item.menu_item?.price || 0) * item.quantity,
+      0,
+    );
+  }
+
+  function getPromotionOrderPrice(promotion: RestaurantPromotion) {
+    return promotion.discount_type === 'fixed_price'
+      ? Number(promotion.discount_value)
+      : getDiscountedPrice(getComboBaseTotal(promotion), promotion);
+  }
 
   async function loadRestaurants() {
     if (!profile) return;
@@ -157,6 +232,26 @@ export function WaiterDashboard() {
       .order('name', { ascending: true });
 
     setMenuItems((data || []) as MenuItem[]);
+  }
+
+  async function loadPromotions() {
+    if (!selectedRestaurant) return;
+    const { data } = await supabase
+      .from('restaurant_promotions')
+      .select(`
+        *,
+        items:restaurant_promotion_items (
+          id,
+          menu_item_id,
+          quantity,
+          menu_item:menu_items (id, name, price, category)
+        )
+      `)
+      .eq('restaurant_id', selectedRestaurant.id)
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });
+
+    setPromotions((data || []) as unknown as RestaurantPromotion[]);
   }
 
   async function loadOrders() {
@@ -225,7 +320,9 @@ export function WaiterDashboard() {
 
     const items = Object.entries(quantities)
       .filter(([, quantity]) => quantity > 0)
-      .map(([menuItemId, quantity]) => ({ menuItemId, quantity }));
+      .map(([itemId, quantity]) => itemId.startsWith('promotion:')
+        ? { promotionId: itemId.replace('promotion:', ''), quantity }
+        : { menuItemId: itemId, quantity });
 
     if (items.length === 0) {
       setError('Selecciona al menos un producto.');
@@ -379,16 +476,53 @@ export function WaiterDashboard() {
             </div>
           </section>
 
-          {availableItems.length === 0 ? (
+          {availableItems.length === 0 && comboPromotions.length === 0 ? (
             <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-white py-8 text-center text-sm text-slate-500">
               No hay opciones disponibles en la carta.
             </div>
-          ) : menuGroups.length === 0 ? (
+          ) : menuGroups.length === 0 && visibleComboPromotions.length === 0 ? (
             <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-white py-8 text-center text-sm text-slate-500">
               No se encontraron productos para esa busqueda.
             </div>
           ) : (
             <div className="space-y-4">
+              {visibleComboPromotions.length > 0 && (
+                <section className="rounded-lg border border-orange-200 bg-white p-3">
+                  <h2 className="mb-2 text-sm font-semibold text-slate-800">Promociones</h2>
+                  <div className="space-y-2">
+                    {visibleComboPromotions.map((promotion) => {
+                      const key = `promotion:${promotion.id}`;
+                      const quantity = quantities[key] || 0;
+                      const comboItems = (promotion.items || []).map((item) => `${item.quantity}x ${item.menu_item?.name || 'Producto'}`).join(', ');
+                      return (
+                        <div key={promotion.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-orange-50 p-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-slate-900">{promotion.name}</p>
+                            <p className="mt-1 text-sm font-medium text-orange-600">{moneyFormatter.format(getPromotionOrderPrice(promotion))}</p>
+                            {comboItems && <p className="mt-1 line-clamp-2 text-xs text-slate-600">{comboItems}</p>}
+                          </div>
+                          <div className="grid grid-cols-[36px_44px_36px] items-center rounded-lg border border-orange-200 bg-white">
+                            <button type="button" onClick={() => selectMenuQuantity(key, quantity - 1)} className="flex h-10 items-center justify-center text-slate-600" aria-label={`Quitar ${promotion.name}`}>
+                              <Minus className="h-4 w-4" />
+                            </button>
+                            <input
+                              type="number"
+                              min="0"
+                              value={quantity}
+                              onChange={(event) => selectMenuQuantity(key, Number(event.target.value))}
+                              className="h-10 w-11 border-x border-orange-100 bg-white text-center text-sm font-bold text-slate-900 outline-none"
+                              aria-label={`Cantidad de ${promotion.name}`}
+                            />
+                            <button type="button" onClick={() => selectMenuQuantity(key, quantity + 1)} className="flex h-10 items-center justify-center text-orange-600" aria-label={`Agregar ${promotion.name}`}>
+                              <Plus className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
               {menuGroups.map(([category, items]) => (
                 <section key={category} className="rounded-lg border border-slate-200 bg-white p-3">
                   <h2 className="mb-2 text-sm font-semibold text-slate-800">{category}</h2>
@@ -400,7 +534,10 @@ export function WaiterDashboard() {
                           <div className="min-w-0">
                             <p className="truncate text-sm font-semibold text-slate-900">{item.name}</p>
                             {item.description && <p className="line-clamp-2 text-xs text-slate-500">{item.description}</p>}
-                            <p className="mt-1 text-sm font-medium text-orange-600">{moneyFormatter.format(item.price)}</p>
+                            <p className="mt-1 text-sm font-medium text-orange-600">
+                              {moneyFormatter.format(getItemOrderPrice(item))}
+                              {getItemDiscountPromotion(item.id) && <span className="ml-1 text-xs font-semibold">promo</span>}
+                            </p>
                           </div>
                           <div className="grid grid-cols-[36px_44px_36px] items-center rounded-lg border border-slate-200 bg-white">
                             <button type="button" onClick={() => selectMenuQuantity(item.id, quantity - 1)} className="flex h-10 items-center justify-center text-slate-600" aria-label={`Quitar ${item.name}`}>
@@ -495,19 +632,43 @@ export function WaiterDashboard() {
               </span>
             </div>
 
-            {selectedMenuItems.length === 0 ? (
+            {selectedMenuItems.length === 0 && selectedPromotions.length === 0 ? (
               <div className="rounded-lg border border-dashed border-slate-300 py-8 text-center text-sm text-slate-500">
                 Todavia no seleccionaste productos para esta mesa.
               </div>
             ) : (
               <div className="space-y-2">
+                {selectedPromotions.map((promotion) => {
+                  const key = `promotion:${promotion.id}`;
+                  const quantity = quantities[key] || 0;
+                  return (
+                    <div key={key} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-orange-50 p-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-900">{promotion.name}</p>
+                        <p className="mt-1 text-sm font-medium text-orange-600">{moneyFormatter.format(getPromotionOrderPrice(promotion))} combo</p>
+                      </div>
+                      <div className="grid grid-cols-[36px_44px_36px] items-center rounded-lg border border-orange-200 bg-white">
+                        <button type="button" onClick={() => setQuantity(key, quantity - 1)} className="flex h-10 items-center justify-center text-slate-600" aria-label={`Quitar ${promotion.name}`}>
+                          <Minus className="h-4 w-4" />
+                        </button>
+                        <span className="text-center text-sm font-bold text-slate-900">{quantity}</span>
+                        <button type="button" onClick={() => setQuantity(key, quantity + 1)} className="flex h-10 items-center justify-center text-orange-600" aria-label={`Agregar ${promotion.name}`}>
+                          <Plus className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
                 {selectedMenuItems.map((item) => {
                   const quantity = quantities[item.id] || 0;
                   return (
                     <div key={item.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-slate-50 p-3">
                       <div className="min-w-0">
                         <p className="truncate text-sm font-semibold text-slate-900">{item.name}</p>
-                        <p className="mt-1 text-sm font-medium text-orange-600">{moneyFormatter.format(item.price)}</p>
+                        <p className="mt-1 text-sm font-medium text-orange-600">
+                          {moneyFormatter.format(getItemOrderPrice(item))}
+                          {getItemDiscountPromotion(item.id) && <span className="ml-1 text-xs font-semibold">promo</span>}
+                        </p>
                       </div>
                       <div className="grid grid-cols-[36px_44px_36px] items-center rounded-lg border border-slate-200 bg-white">
                         <button type="button" onClick={() => setQuantity(item.id, quantity - 1)} className="flex h-10 items-center justify-center text-slate-600" aria-label={`Quitar ${item.name}`}>
@@ -545,7 +706,7 @@ export function WaiterDashboard() {
             <button
               type="button"
               onClick={handleSaveOrder}
-              disabled={saving || availableItems.length === 0}
+              disabled={saving || (availableItems.length === 0 && comboPromotions.length === 0)}
               className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-orange-500 px-5 py-2 text-sm font-semibold text-white disabled:opacity-50"
             >
               <CheckCircle2 className="h-4 w-4" />
