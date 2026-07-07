@@ -67,6 +67,7 @@ type RestaurantOrder = Order & {
 type OrderGroupId = 'pending' | 'kitchen' | 'delivery' | 'closed';
 type HistoryPeriod = 'today' | '7days' | '30days' | 'all';
 type RestaurantTab = 'menu' | 'orders' | 'route' | 'drivers' | 'waiters' | 'tables' | 'reservations';
+type MenuAvailabilityFilter = 'all' | 'available' | 'unavailable';
 
 type ReservationStatus = RestaurantReservation['status'];
 
@@ -188,6 +189,9 @@ export function RestaurantDashboard() {
   const [activeTab, setActiveTab] = useState<RestaurantTab>('orders');
   const [activeOrderGroupId, setActiveOrderGroupId] = useState<OrderGroupId>('pending');
   const [orderHistoryPeriod, setOrderHistoryPeriod] = useState<HistoryPeriod>('today');
+  const [menuSearchTerm, setMenuSearchTerm] = useState('');
+  const [menuCategoryFilter, setMenuCategoryFilter] = useState('all');
+  const [menuAvailabilityFilter, setMenuAvailabilityFilter] = useState<MenuAvailabilityFilter>('all');
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [showOrderDetail, setShowOrderDetail] = useState(false);
@@ -667,6 +671,34 @@ export function RestaurantDashboard() {
   };
 
   const selectedOrder = orders.find((order) => order.id === selectedOrderId) || null;
+  const normalizedMenuSearchTerm = menuSearchTerm.trim().toLowerCase();
+  const menuCategoryOptions = Array.from(
+    new Map(
+      [
+        ...dishCategories.map((category) => [category.id, category.name] as const),
+        ...menuItems
+          .filter((item) => item.category_id || item.category)
+          .map((item) => [item.category_id || item.category || '', item.category || 'Sin categoria'] as const),
+      ]
+    )
+  );
+  const filteredMenuItems = menuItems.filter((item) => {
+    const matchesSearch = !normalizedMenuSearchTerm
+      || item.name.toLowerCase().includes(normalizedMenuSearchTerm)
+      || (item.description || '').toLowerCase().includes(normalizedMenuSearchTerm)
+      || (item.category || '').toLowerCase().includes(normalizedMenuSearchTerm);
+    const matchesCategory = menuCategoryFilter === 'all'
+      || item.category_id === menuCategoryFilter
+      || item.category === menuCategoryFilter;
+    const matchesAvailability = menuAvailabilityFilter === 'all'
+      || (menuAvailabilityFilter === 'available' && item.is_available)
+      || (menuAvailabilityFilter === 'unavailable' && !item.is_available);
+
+    return matchesSearch && matchesCategory && matchesAvailability;
+  });
+  const hasMenuFilters = Boolean(normalizedMenuSearchTerm)
+    || menuCategoryFilter !== 'all'
+    || menuAvailabilityFilter !== 'all';
   const pendingRouteOrders = routeOrderIds
     .map((id) => orders.find((order) => order.id === id))
     .filter((order): order is RestaurantOrder => {
@@ -1300,8 +1332,72 @@ export function RestaurantDashboard() {
                         <p className="text-gray-600">No hay elementos en el menú</p>
                       </div>
                     ) : (
+                      <>
+                        <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                          <div className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_220px_180px_auto] lg:items-end">
+                            <label className="block">
+                              <span className="mb-1 block text-xs font-medium text-gray-600">Buscar</span>
+                              <div className="relative">
+                                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                                <input
+                                  type="search"
+                                  value={menuSearchTerm}
+                                  onChange={(event) => setMenuSearchTerm(event.target.value)}
+                                  placeholder="Nombre, descripcion o categoria"
+                                  className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm focus:border-transparent focus:ring-2 focus:ring-orange-500"
+                                />
+                              </div>
+                            </label>
+                            <label className="block">
+                              <span className="mb-1 block text-xs font-medium text-gray-600">Categoria</span>
+                              <select
+                                value={menuCategoryFilter}
+                                onChange={(event) => setMenuCategoryFilter(event.target.value)}
+                                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-orange-500"
+                              >
+                                <option value="all">Todas</option>
+                                {menuCategoryOptions.map(([value, label]) => (
+                                  <option key={value} value={value}>{label}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="block">
+                              <span className="mb-1 block text-xs font-medium text-gray-600">Disponibilidad</span>
+                              <select
+                                value={menuAvailabilityFilter}
+                                onChange={(event) => setMenuAvailabilityFilter(event.target.value as MenuAvailabilityFilter)}
+                                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-orange-500"
+                              >
+                                <option value="all">Todas</option>
+                                <option value="available">Disponibles</option>
+                                <option value="unavailable">No disponibles</option>
+                              </select>
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMenuSearchTerm('');
+                                setMenuCategoryFilter('all');
+                                setMenuAvailabilityFilter('all');
+                              }}
+                              disabled={!hasMenuFilters}
+                              className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Limpiar
+                            </button>
+                          </div>
+                          <p className="mt-3 text-xs text-gray-500">
+                            Mostrando {filteredMenuItems.length} de {menuItems.length} elementos.
+                          </p>
+                        </div>
+
+                        {filteredMenuItems.length === 0 ? (
+                          <div className="rounded-lg border border-dashed border-gray-300 py-10 text-center text-sm text-gray-500">
+                            No se encontraron elementos con esos filtros.
+                          </div>
+                        ) : (
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {menuItems.map((item) => (
+                        {filteredMenuItems.map((item) => (
                           <div key={item.id} className="border rounded-lg overflow-hidden hover:shadow-md transition flex flex-col">
                             {item.image_url ? (
                               <img src={item.image_url} alt={item.name} className="w-full h-40 object-cover" />
@@ -1351,6 +1447,8 @@ export function RestaurantDashboard() {
                           </div>
                         ))}
                       </div>
+                        )}
+                      </>
                     )}
                   </div>
                 )}
@@ -1889,22 +1987,37 @@ export function RestaurantDashboard() {
                       <button onClick={() => setShowDriverForm(true)} className="inline-flex items-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600"><UserPlus className="h-4 w-4" />Nuevo repartidor</button>
                     </div>
                     {drivers.length === 0 ? <div className="rounded-lg border border-dashed border-gray-300 py-10 text-center text-sm text-gray-500">No hay repartidores cargados.</div> : (
-                      <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="overflow-hidden rounded-lg border border-gray-200">
+                        <div className="hidden grid-cols-[minmax(160px,1.1fr)_minmax(180px,1.3fr)_minmax(120px,0.8fr)_110px_110px] gap-3 bg-gray-50 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-gray-500 md:grid">
+                          <span>Nombre</span>
+                          <span>Email</span>
+                          <span>Telefono</span>
+                          <span>Estado</span>
+                          <span className="text-right">Acciones</span>
+                        </div>
                         {drivers.map((item) => (
-                          <div key={item.driver_id} className="rounded-lg border border-gray-200 p-4">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <p className="font-semibold text-gray-800">{item.driver.full_name}</p>
-                                <p className="truncate text-sm text-gray-500">{item.driver.email}</p>
-                                {item.driver.phone && <p className="text-sm text-gray-500">{item.driver.phone}</p>}
-                              </div>
-                              <div className="flex shrink-0 flex-col items-end gap-2">
-                                <span className={`rounded-full px-2 py-1 text-xs font-medium ${item.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{item.is_active ? 'Activo' : 'Inactivo'}</span>
-                                <button type="button" onClick={() => setEditingDriver(item)} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">
-                                  <Edit2 className="h-4 w-4" />
-                                  Editar
-                                </button>
-                              </div>
+                          <div key={item.driver_id} className="grid gap-3 border-t border-gray-200 px-4 py-3 first:border-t-0 md:grid-cols-[minmax(160px,1.1fr)_minmax(180px,1.3fr)_minmax(120px,0.8fr)_110px_110px] md:items-center">
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium uppercase tracking-wide text-gray-400 md:hidden">Nombre</p>
+                              <p className="truncate font-semibold text-gray-800">{item.driver.full_name}</p>
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium uppercase tracking-wide text-gray-400 md:hidden">Email</p>
+                              <p className="truncate text-sm text-gray-500">{item.driver.email}</p>
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium uppercase tracking-wide text-gray-400 md:hidden">Telefono</p>
+                              <p className="truncate text-sm text-gray-500">{item.driver.phone || '-'}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium uppercase tracking-wide text-gray-400 md:hidden">Estado</p>
+                              <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${item.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{item.is_active ? 'Activo' : 'Inactivo'}</span>
+                            </div>
+                            <div className="flex md:justify-end">
+                              <button type="button" onClick={() => setEditingDriver(item)} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                                <Edit2 className="h-4 w-4" />
+                                Editar
+                              </button>
                             </div>
                           </div>
                         ))}
@@ -1920,22 +2033,37 @@ export function RestaurantDashboard() {
                       <button onClick={() => setShowWaiterForm(true)} className="inline-flex items-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600"><UserPlus className="h-4 w-4" />Nuevo mozo</button>
                     </div>
                     {waiters.length === 0 ? <div className="rounded-lg border border-dashed border-gray-300 py-10 text-center text-sm text-gray-500">No hay mozos cargados.</div> : (
-                      <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="overflow-hidden rounded-lg border border-gray-200">
+                        <div className="hidden grid-cols-[minmax(160px,1.1fr)_minmax(180px,1.3fr)_minmax(120px,0.8fr)_110px_110px] gap-3 bg-gray-50 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-gray-500 md:grid">
+                          <span>Nombre</span>
+                          <span>Email</span>
+                          <span>Telefono</span>
+                          <span>Estado</span>
+                          <span className="text-right">Acciones</span>
+                        </div>
                         {waiters.map((item) => (
-                          <div key={item.waiter_id} className="rounded-lg border border-gray-200 p-4">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <p className="font-semibold text-gray-800">{item.waiter.full_name}</p>
-                                <p className="truncate text-sm text-gray-500">{item.waiter.email}</p>
-                                {item.waiter.phone && <p className="text-sm text-gray-500">{item.waiter.phone}</p>}
-                              </div>
-                              <div className="flex shrink-0 flex-col items-end gap-2">
-                                <span className={`rounded-full px-2 py-1 text-xs font-medium ${item.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{item.is_active ? 'Activo' : 'Inactivo'}</span>
-                                <button type="button" onClick={() => setEditingWaiter(item)} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">
-                                  <Edit2 className="h-4 w-4" />
-                                  Editar
-                                </button>
-                              </div>
+                          <div key={item.waiter_id} className="grid gap-3 border-t border-gray-200 px-4 py-3 first:border-t-0 md:grid-cols-[minmax(160px,1.1fr)_minmax(180px,1.3fr)_minmax(120px,0.8fr)_110px_110px] md:items-center">
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium uppercase tracking-wide text-gray-400 md:hidden">Nombre</p>
+                              <p className="truncate font-semibold text-gray-800">{item.waiter.full_name}</p>
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium uppercase tracking-wide text-gray-400 md:hidden">Email</p>
+                              <p className="truncate text-sm text-gray-500">{item.waiter.email}</p>
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium uppercase tracking-wide text-gray-400 md:hidden">Telefono</p>
+                              <p className="truncate text-sm text-gray-500">{item.waiter.phone || '-'}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium uppercase tracking-wide text-gray-400 md:hidden">Estado</p>
+                              <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${item.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{item.is_active ? 'Activo' : 'Inactivo'}</span>
+                            </div>
+                            <div className="flex md:justify-end">
+                              <button type="button" onClick={() => setEditingWaiter(item)} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                                <Edit2 className="h-4 w-4" />
+                                Editar
+                              </button>
                             </div>
                           </div>
                         ))}
