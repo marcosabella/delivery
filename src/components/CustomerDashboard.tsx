@@ -38,8 +38,9 @@ export function CustomerDashboard() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [favoriteRestaurantIds, setFavoriteRestaurantIds] = useState<Set<string>>(() => new Set());
   const [favoriteMenuItemIds, setFavoriteMenuItemIds] = useState<Set<string>>(() => new Set());
+  const [favoriteMenuItems, setFavoriteMenuItems] = useState<MenuItem[]>([]);
   const [showProfile, setShowProfile] = useState(false);
-  const [activeView, setActiveView] = useState<'restaurants' | 'cart' | 'orders'>('restaurants');
+  const [activeView, setActiveView] = useState<'restaurants' | 'cart' | 'favorites' | 'orders'>('restaurants');
   const [searchQuery, setSearchQuery] = useState('');
   const [deliveryMethod, setDeliveryMethod] = useState<DeliveryMethod>('delivery');
   const [deliveryAddress, setDeliveryAddress] = useState('');
@@ -158,7 +159,22 @@ export function CustomerDashboard() {
     ]);
 
     setFavoriteRestaurantIds(new Set((restaurantFavorites || []).map((favorite) => favorite.restaurant_id as string)));
-    setFavoriteMenuItemIds(new Set((menuItemFavorites || []).map((favorite) => favorite.menu_item_id as string)));
+    const menuItemIds = (menuItemFavorites || []).map((favorite) => favorite.menu_item_id as string);
+    setFavoriteMenuItemIds(new Set(menuItemIds));
+
+    if (menuItemIds.length === 0) {
+      setFavoriteMenuItems([]);
+      return;
+    }
+
+    const { data: favoriteItems } = await supabase
+      .from('menu_items')
+      .select('*')
+      .in('id', menuItemIds)
+      .eq('is_available', true)
+      .order('name', { ascending: true });
+
+    setFavoriteMenuItems((favoriteItems || []) as MenuItem[]);
   }
 
   async function toggleFavoriteRestaurant(restaurantId: string) {
@@ -212,6 +228,13 @@ export function CustomerDashboard() {
       }
       return next;
     });
+    setFavoriteMenuItems((current) => {
+      if (wasFavorite) return current.filter((item) => item.id !== menuItemId);
+      const item = menuItems.find((menuItem) => menuItem.id === menuItemId);
+      return item && !current.some((favorite) => favorite.id === menuItemId)
+        ? [...current, item].sort((a, b) => a.name.localeCompare(b.name))
+        : current;
+    });
 
     const { error } = wasFavorite
       ? await supabase
@@ -233,6 +256,7 @@ export function CustomerDashboard() {
         }
         return next;
       });
+      await loadFavorites();
       setModalMessage({ type: 'error', message: 'No se pudo actualizar el producto favorito.' });
     }
   }
@@ -378,6 +402,9 @@ export function CustomerDashboard() {
     const favoriteDiff = Number(favoriteMenuItemIds.has(b.id)) - Number(favoriteMenuItemIds.has(a.id));
     return favoriteDiff || a.name.localeCompare(b.name);
   });
+  const favoriteRestaurants = restaurants
+    .filter((restaurant) => favoriteRestaurantIds.has(restaurant.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   const statusColors: Record<Order['status'], string> = {
     pending: 'bg-yellow-100 text-yellow-800',
@@ -396,6 +423,7 @@ export function CustomerDashboard() {
   const customerNavItems = [
     { id: 'restaurants' as const, label: 'Restaurantes', icon: Store },
     { id: 'cart' as const, label: 'Carrito', icon: ShoppingCart },
+    { id: 'favorites' as const, label: 'Favoritos', icon: Heart },
     { id: 'orders' as const, label: 'Pedidos', icon: Clock },
   ];
 
@@ -771,6 +799,143 @@ export function CustomerDashboard() {
                     Realizar pedido
                   </button>
                 </div>
+              </div>
+            )}
+          </div>
+        ) : activeView === 'favorites' ? (
+          <div>
+            <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h1 className="mb-1 text-xl font-semibold text-gray-800">Favoritos</h1>
+                <p className="text-gray-600">Tus restaurantes y productos guardados para pedir mas rapido.</p>
+              </div>
+              <button
+                onClick={() => setActiveView('restaurants')}
+                className="self-start sm:self-auto px-4 py-2 text-sm font-medium text-orange-600 border border-orange-200 rounded-lg hover:bg-orange-50 transition"
+              >
+                Ver restaurantes
+              </button>
+            </div>
+
+            {favoriteRestaurants.length === 0 && favoriteMenuItems.length === 0 ? (
+              <div className="rounded-lg bg-white p-8 text-center shadow-sm">
+                <Heart className="mx-auto mb-3 h-10 w-10 text-gray-300" />
+                <p className="text-gray-600">Todavia no tenes favoritos</p>
+              </div>
+            ) : (
+              <div className="space-y-8">
+                <section>
+                  <div className="mb-4 flex items-center justify-between">
+                    <h2 className="text-lg font-semibold text-gray-800">Restaurantes favoritos</h2>
+                    <span className="text-sm text-gray-500">{favoriteRestaurants.length}</span>
+                  </div>
+                  {favoriteRestaurants.length === 0 ? (
+                    <div className="rounded-lg bg-white p-6 text-center text-gray-500 shadow-sm">
+                      No guardaste restaurantes favoritos.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                      {favoriteRestaurants.map((restaurant) => (
+                        <div
+                          key={restaurant.id}
+                          onClick={() => {
+                            setSelectedRestaurant(restaurant);
+                            setActiveView('restaurants');
+                          }}
+                          className="group cursor-pointer overflow-hidden rounded-lg bg-white shadow-sm transition hover:shadow-md"
+                        >
+                          <div className="relative flex h-28 items-center justify-center bg-slate-100">
+                            <Store className="h-8 w-8 text-slate-400" />
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void toggleFavoriteRestaurant(restaurant.id);
+                              }}
+                              className="absolute right-3 top-3 rounded-full bg-red-500 p-2 text-white shadow-sm transition hover:bg-red-600"
+                              aria-label="Quitar restaurante de favoritos"
+                            >
+                              <Heart className="h-4 w-4 fill-current" />
+                            </button>
+                          </div>
+                          <div className="p-4">
+                            <h3 className="mb-1 font-semibold text-gray-800 transition group-hover:text-orange-500">
+                              {restaurant.name}
+                            </h3>
+                            <p className="mb-3 line-clamp-2 text-sm text-gray-600">{restaurant.description}</p>
+                            <div className="flex items-center text-sm text-gray-500">
+                              <MapPin className="mr-1 h-4 w-4" />
+                              {restaurant.address}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section>
+                  <div className="mb-4 flex items-center justify-between">
+                    <h2 className="text-lg font-semibold text-gray-800">Productos favoritos</h2>
+                    <span className="text-sm text-gray-500">{favoriteMenuItems.length}</span>
+                  </div>
+                  {favoriteMenuItems.length === 0 ? (
+                    <div className="rounded-lg bg-white p-6 text-center text-gray-500 shadow-sm">
+                      No guardaste productos favoritos.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                      {favoriteMenuItems.map((item) => {
+                        const restaurant = restaurants.find((current) => current.id === item.restaurant_id);
+                        return (
+                          <div key={item.id} className="overflow-hidden rounded-lg bg-white shadow-sm transition hover:shadow-md">
+                            <div className="relative flex h-24 items-center justify-center bg-slate-100">
+                              <Store className="h-7 w-7 text-slate-400" />
+                              <button
+                                type="button"
+                                onClick={() => void toggleFavoriteMenuItem(item.id)}
+                                className="absolute right-3 top-3 rounded-full bg-red-500 p-2 text-white shadow-sm transition hover:bg-red-600"
+                                aria-label="Quitar producto de favoritos"
+                              >
+                                <Heart className="h-4 w-4 fill-current" />
+                              </button>
+                            </div>
+                            <div className="p-4">
+                              <div className="mb-2 flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <h3 className="font-bold text-gray-800">{item.name}</h3>
+                                  <p className="truncate text-xs font-semibold text-orange-600">{restaurant?.name || 'Restaurante'}</p>
+                                </div>
+                                {item.category && (
+                                  <span className="shrink-0 rounded bg-orange-100 px-2 py-1 text-xs text-orange-700">
+                                    {item.category}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="mb-4 line-clamp-2 text-sm text-gray-600">{item.description}</p>
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="text-lg font-semibold text-orange-500">${item.price}</span>
+                                <button
+                                  onClick={() => {
+                                    if (!restaurant) {
+                                      setModalMessage({ type: 'error', message: 'No se encontro el restaurante del producto.' });
+                                      return;
+                                    }
+                                    setSelectedRestaurant(restaurant);
+                                    addToCart(item);
+                                  }}
+                                  className="rounded-lg bg-orange-500 px-4 py-2 font-medium text-white transition hover:bg-orange-600"
+                                >
+                                  Agregar
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
               </div>
             )}
           </div>
