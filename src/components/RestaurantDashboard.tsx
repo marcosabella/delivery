@@ -35,6 +35,7 @@ import {
   Hash,
   CalendarDays,
   BellRing,
+  BarChart3,
 } from 'lucide-react';
 
 type RestaurantOrder = Order & {
@@ -66,8 +67,10 @@ type RestaurantOrder = Order & {
 
 type OrderGroupId = 'pending' | 'kitchen' | 'delivery' | 'closed';
 type HistoryPeriod = 'today' | '7days' | '30days' | 'all';
-type RestaurantTab = 'menu' | 'orders' | 'route' | 'drivers' | 'waiters' | 'tables' | 'reservations';
+type RestaurantTab = 'menu' | 'orders' | 'reports' | 'route' | 'drivers' | 'waiters' | 'tables' | 'reservations';
 type MenuAvailabilityFilter = 'all' | 'available' | 'unavailable';
+type ReportDeliveryFilter = 'all' | Order['delivery_method'];
+type ReportStatusFilter = 'all' | Order['status'];
 
 type ReservationStatus = RestaurantReservation['status'];
 
@@ -101,6 +104,29 @@ type RestaurantWaiter = {
   waiter: { id: string; full_name: string; email: string; phone: string | null };
 };
 
+type RestaurantPromotionItem = {
+  id: string;
+  menu_item_id: string;
+  quantity: number;
+  menu_item?: Pick<MenuItem, 'id' | 'name' | 'price' | 'category'> | null;
+};
+
+type RestaurantPromotion = {
+  id: string;
+  restaurant_id: string;
+  name: string;
+  description: string | null;
+  promotion_type: 'combo' | 'discount';
+  discount_type: 'fixed_price' | 'percentage' | 'amount';
+  discount_value: number;
+  starts_at: string | null;
+  ends_at: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  items?: RestaurantPromotionItem[];
+};
+
 type OrderProfile = {
   id: string;
   full_name: string | null;
@@ -128,6 +154,14 @@ type RouteHistory = {
     delivery_notes: string | null;
     order: RestaurantOrder;
   }>;
+};
+
+type ReportGroupRow = {
+  key: string;
+  label: string;
+  orders: number;
+  quantity: number;
+  total: number;
 };
 
 const moneyFormatter = new Intl.NumberFormat('es-AR', {
@@ -175,6 +209,23 @@ function isWithinHistoryPeriod(dateValue: string, period: HistoryPeriod) {
   return new Date(dateValue) >= start;
 }
 
+function isPromotionCurrent(promotion: Pick<RestaurantPromotion, 'is_active' | 'starts_at' | 'ends_at'>) {
+  if (!promotion.is_active) return false;
+
+  const now = new Date();
+  if (promotion.starts_at && new Date(promotion.starts_at) > now) return false;
+  if (promotion.ends_at && new Date(promotion.ends_at) < now) return false;
+
+  return true;
+}
+
+function getDiscountedPrice(price: number, promotion: Pick<RestaurantPromotion, 'discount_type' | 'discount_value'>) {
+  const discountValue = Number(promotion.discount_value || 0);
+  if (promotion.discount_type === 'fixed_price') return Math.max(0, discountValue);
+  if (promotion.discount_type === 'percentage') return Math.max(0, price * (1 - discountValue / 100));
+  return Math.max(0, price - discountValue);
+}
+
 export function RestaurantDashboard() {
   const { profile, signOut } = useAuth();
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
@@ -184,7 +235,9 @@ export function RestaurantDashboard() {
   const [tables, setTables] = useState<RestaurantTable[]>([]);
   const [reservations, setReservations] = useState<RestaurantReservationWithTable[]>([]);
   const [orders, setOrders] = useState<RestaurantOrder[]>([]);
+  const [promotions, setPromotions] = useState<RestaurantPromotion[]>([]);
   const [showMenuForm, setShowMenuForm] = useState(false);
+  const [showPromotionForm, setShowPromotionForm] = useState(false);
   const [showOrderForm, setShowOrderForm] = useState(false);
   const [activeTab, setActiveTab] = useState<RestaurantTab>('orders');
   const [activeOrderGroupId, setActiveOrderGroupId] = useState<OrderGroupId>('pending');
@@ -192,6 +245,12 @@ export function RestaurantDashboard() {
   const [menuSearchTerm, setMenuSearchTerm] = useState('');
   const [menuCategoryFilter, setMenuCategoryFilter] = useState('all');
   const [menuAvailabilityFilter, setMenuAvailabilityFilter] = useState<MenuAvailabilityFilter>('all');
+  const [reportDateFrom, setReportDateFrom] = useState('');
+  const [reportDateTo, setReportDateTo] = useState('');
+  const [reportCustomerFilter, setReportCustomerFilter] = useState('');
+  const [reportCategoryFilter, setReportCategoryFilter] = useState('all');
+  const [reportDeliveryFilter, setReportDeliveryFilter] = useState<ReportDeliveryFilter>('all');
+  const [reportStatusFilter, setReportStatusFilter] = useState<ReportStatusFilter>('all');
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [showOrderDetail, setShowOrderDetail] = useState(false);
@@ -227,6 +286,7 @@ export function RestaurantDashboard() {
   useEffect(() => {
     if (selectedRestaurant) {
       loadMenuItems();
+      loadPromotions();
       loadOrders();
       loadDrivers();
       loadWaiters();
@@ -293,6 +353,26 @@ export function RestaurantDashboard() {
       .order('category', { ascending: true });
 
     if (data) setMenuItems(data);
+  }
+
+  async function loadPromotions() {
+    if (!selectedRestaurant) return;
+
+    const { data } = await supabase
+      .from('restaurant_promotions')
+      .select(`
+        *,
+        items:restaurant_promotion_items (
+          id,
+          menu_item_id,
+          quantity,
+          menu_item:menu_items (id, name, price, category)
+        )
+      `)
+      .eq('restaurant_id', selectedRestaurant.id)
+      .order('created_at', { ascending: false });
+
+    if (data) setPromotions((data || []) as unknown as RestaurantPromotion[]);
   }
 
   async function loadDishCategories() {
@@ -650,6 +730,20 @@ export function RestaurantDashboard() {
     loadMenuItems();
   }
 
+  async function handleTogglePromotion(promotion: RestaurantPromotion) {
+    await supabase
+      .from('restaurant_promotions')
+      .update({ is_active: !promotion.is_active, updated_at: new Date().toISOString() })
+      .eq('id', promotion.id);
+    loadPromotions();
+  }
+
+  async function handleDeletePromotion(promotionId: string) {
+    if (!confirm('¿Eliminar esta promocion?')) return;
+    await supabase.from('restaurant_promotions').delete().eq('id', promotionId);
+    loadPromotions();
+  }
+
   const statusColors: Record<Order['status'], string> = {
     pending: 'bg-yellow-100 text-yellow-800',
     confirmed: 'bg-blue-100 text-blue-800',
@@ -668,6 +762,12 @@ export function RestaurantDashboard() {
     delivered: 'Entregado',
     closed: 'Mesa cerrada',
     cancelled: 'Cancelado',
+  };
+
+  const deliveryMethodLabels: Record<Order['delivery_method'], string> = {
+    delivery: 'Entrega a domicilio',
+    pickup: 'Retira en restaurante',
+    dine_in: 'Mesa en el local',
   };
 
   const selectedOrder = orders.find((order) => order.id === selectedOrderId) || null;
@@ -719,6 +819,93 @@ export function RestaurantDashboard() {
   );
   const pendingOrderCount = orders.filter((order) => order.status === 'pending').length;
   const filteredRoutes = routes.filter((route) => isWithinHistoryPeriod(route.assigned_at, routeHistoryPeriod));
+  const normalizedReportCustomerFilter = reportCustomerFilter.trim().toLocaleLowerCase('es');
+  const reportCategoryOptions = Array.from(new Set(
+    orders.flatMap((order) => (order.order_items || []).map((item) => item.menu_item?.category || 'Sin categoria'))
+  )).sort((a, b) => a.localeCompare(b, 'es'));
+  const reportOrders = orders
+    .map((order) => {
+      const orderDate = new Date(order.created_at);
+      const fromDate = reportDateFrom ? new Date(`${reportDateFrom}T00:00:00`) : null;
+      const toDate = reportDateTo ? new Date(`${reportDateTo}T23:59:59`) : null;
+      const customerName = getCustomerName(order);
+      const categoryFilteredItems = reportCategoryFilter === 'all'
+        ? (order.order_items || [])
+        : (order.order_items || []).filter((item) => (item.menu_item?.category || 'Sin categoria') === reportCategoryFilter);
+      const matchesDateFrom = !fromDate || orderDate >= fromDate;
+      const matchesDateTo = !toDate || orderDate <= toDate;
+      const matchesCustomer = !normalizedReportCustomerFilter
+        || customerName.toLocaleLowerCase('es').includes(normalizedReportCustomerFilter)
+        || order.customer?.email?.toLocaleLowerCase('es').includes(normalizedReportCustomerFilter)
+        || order.customer?.phone?.toLocaleLowerCase('es').includes(normalizedReportCustomerFilter);
+      const matchesCategory = reportCategoryFilter === 'all' || categoryFilteredItems.length > 0;
+      const matchesDelivery = reportDeliveryFilter === 'all' || order.delivery_method === reportDeliveryFilter;
+      const matchesStatus = reportStatusFilter === 'all' || order.status === reportStatusFilter;
+
+      if (!matchesDateFrom || !matchesDateTo || !matchesCustomer || !matchesCategory || !matchesDelivery || !matchesStatus) {
+        return null;
+      }
+
+      return {
+        order,
+        customerName,
+        reportItems: categoryFilteredItems,
+        reportTotal: reportCategoryFilter === 'all'
+          ? order.total_amount
+          : categoryFilteredItems.reduce((sum, item) => sum + item.subtotal, 0),
+      };
+    })
+    .filter((item): item is { order: RestaurantOrder; customerName: string; reportItems: NonNullable<RestaurantOrder['order_items']>; reportTotal: number } => Boolean(item));
+  const reportTotalOrders = reportOrders.length;
+  const reportTotalAmount = reportOrders.reduce((sum, item) => sum + item.reportTotal, 0);
+  const reportTotalProducts = reportOrders.reduce(
+    (sum, item) => sum + item.reportItems.reduce((itemSum, orderItem) => itemSum + orderItem.quantity, 0),
+    0,
+  );
+  const reportAverageTicket = reportTotalOrders > 0 ? reportTotalAmount / reportTotalOrders : 0;
+
+  function buildReportRows(
+    getKey: (item: NonNullable<RestaurantOrder['order_items']>[number], order: RestaurantOrder, customerName: string) => string,
+    getLabel: (key: string) => string = (key) => key,
+  ) {
+    const rows = new Map<string, ReportGroupRow>();
+    for (const entry of reportOrders) {
+      const orderKeys = new Set<string>();
+      for (const item of entry.reportItems) {
+        const key = getKey(item, entry.order, entry.customerName);
+        const current = rows.get(key) || { key, label: getLabel(key), orders: 0, quantity: 0, total: 0 };
+        current.quantity += item.quantity;
+        current.total += item.subtotal;
+        rows.set(key, current);
+        orderKeys.add(key);
+      }
+      for (const key of orderKeys) {
+        const current = rows.get(key);
+        if (current) current.orders += 1;
+      }
+    }
+
+    return Array.from(rows.values()).sort((a, b) => b.total - a.total);
+  }
+
+  const reportRowsByMenu = buildReportRows((item) => item.menu_item?.name || `Producto #${item.menu_item_id.slice(0, 8)}`);
+  const reportRowsByCategory = buildReportRows((item) => item.menu_item?.category || 'Sin categoria');
+  const reportRowsByCustomer = (() => {
+    const rows = new Map<string, ReportGroupRow>();
+    for (const entry of reportOrders) {
+      const current = rows.get(entry.customerName) || { key: entry.customerName, label: entry.customerName, orders: 0, quantity: 0, total: 0 };
+      current.orders += 1;
+      current.quantity += entry.reportItems.reduce((sum, item) => sum + item.quantity, 0);
+      current.total += entry.reportTotal;
+      rows.set(entry.customerName, current);
+    }
+
+    return Array.from(rows.values()).sort((a, b) => b.total - a.total);
+  })();
+  const hasReportFilters = Boolean(reportDateFrom || reportDateTo || reportCustomerFilter.trim())
+    || reportCategoryFilter !== 'all'
+    || reportDeliveryFilter !== 'all'
+    || reportStatusFilter !== 'all';
   const orderGroups: Array<{ id: OrderGroupId; title: string; icon: typeof Clock; orders: RestaurantOrder[] }> = [
     { id: 'pending', title: 'Nuevos', icon: Clock, orders: orders.filter((order) => order.status === 'pending') },
     { id: 'kitchen', title: 'Cocina', icon: ChefHat, orders: orders.filter((order) => order.status === 'confirmed' || order.status === 'preparing') },
@@ -1067,8 +1254,45 @@ export function RestaurantDashboard() {
     );
   }
 
+  function renderReportTable(title: string, rows: ReportGroupRow[], emptyText: string) {
+    return (
+      <section className="rounded-lg border border-gray-200 bg-white">
+        <div className="border-b border-gray-200 px-4 py-3">
+          <h3 className="font-semibold text-gray-800">{title}</h3>
+        </div>
+        {rows.length === 0 ? (
+          <p className="px-4 py-8 text-center text-sm text-gray-500">{emptyText}</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-[620px] w-full text-left text-sm">
+              <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                <tr>
+                  <th className="px-4 py-3">Detalle</th>
+                  <th className="px-4 py-3 text-right">Pedidos</th>
+                  <th className="px-4 py-3 text-right">Cantidad</th>
+                  <th className="px-4 py-3 text-right">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {rows.slice(0, 12).map((row) => (
+                  <tr key={row.key} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-medium text-gray-800">{row.label}</td>
+                    <td className="px-4 py-3 text-right text-gray-600">{row.orders}</td>
+                    <td className="px-4 py-3 text-right text-gray-600">{row.quantity}</td>
+                    <td className="px-4 py-3 text-right font-semibold text-orange-600">{moneyFormatter.format(row.total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    );
+  }
+
   const restaurantNavItems = [
     { id: 'orders' as const, label: 'Pedidos', icon: PackageCheck, count: pendingOrderCount },
+    { id: 'reports' as const, label: 'Reportes', icon: BarChart3 },
     { id: 'route' as const, label: 'Hoja de ruta', icon: Route },
     { id: 'tables' as const, label: 'Mesas', icon: Hash },
     { id: 'reservations' as const, label: 'Reservas', icon: CalendarDays },
@@ -1315,16 +1539,75 @@ export function RestaurantDashboard() {
               <div className="p-4 sm:p-5">
                 {activeTab === 'menu' && (
                   <div>
-                    <div className="flex justify-between items-center mb-6">
+                    <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <h2 className="text-xl font-bold text-gray-800">Elementos del Menú</h2>
-                      <button
-                        onClick={() => setShowMenuForm(true)}
-                        className="flex items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium transition"
-                      >
-                        <Plus className="w-5 h-5" />
-                        Agregar Platillo
-                      </button>
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <button
+                          onClick={() => setShowPromotionForm(true)}
+                          className="flex items-center justify-center gap-2 rounded-lg border border-orange-500 px-4 py-2 font-medium text-orange-600 transition hover:bg-orange-50"
+                        >
+                          <Plus className="w-5 h-5" />
+                          Agregar promocion
+                        </button>
+                        <button
+                          onClick={() => setShowMenuForm(true)}
+                          className="flex items-center justify-center gap-2 bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium transition"
+                        >
+                          <Plus className="w-5 h-5" />
+                          Agregar Platillo
+                        </button>
+                      </div>
                     </div>
+
+                    <section className="mb-6 rounded-lg border border-gray-200 bg-white p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="font-semibold text-gray-800">Promociones</h3>
+                          <p className="text-sm text-gray-600">Combos y descuentos activos por fecha para productos del menu.</p>
+                        </div>
+                        <span className="rounded-full bg-orange-50 px-2 py-1 text-xs font-semibold text-orange-700">{promotions.length}</span>
+                      </div>
+                      {promotions.length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-gray-300 py-8 text-center text-sm text-gray-500">
+                          Todavia no hay promociones cargadas.
+                        </div>
+                      ) : (
+                        <div className="grid gap-3 md:grid-cols-2">
+                          {promotions.map((promotion) => {
+                            const current = isPromotionCurrent(promotion);
+                            const itemsLabel = (promotion.items || [])
+                              .map((item) => `${item.quantity}x ${item.menu_item?.name || 'Producto'}`)
+                              .join(', ');
+                            return (
+                              <div key={promotion.id} className="rounded-lg border border-gray-200 p-4">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="font-semibold text-gray-800">{promotion.name}</p>
+                                    <p className="text-sm text-gray-500">{promotion.promotion_type === 'combo' ? 'Combo' : 'Descuento'} - {promotion.discount_type === 'percentage' ? `${promotion.discount_value}%` : moneyFormatter.format(Number(promotion.discount_value))}</p>
+                                  </div>
+                                  <span className={`rounded-full px-2 py-1 text-xs font-medium ${current ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
+                                    {current ? 'Vigente' : 'Inactiva'}
+                                  </span>
+                                </div>
+                                {promotion.description && <p className="mt-2 text-sm text-gray-600">{promotion.description}</p>}
+                                <p className="mt-2 text-xs text-gray-500">{itemsLabel || 'Sin productos asignados'}</p>
+                                <p className="mt-2 text-xs text-gray-500">
+                                  {promotion.starts_at ? new Date(promotion.starts_at).toLocaleDateString() : 'Sin inicio'} - {promotion.ends_at ? new Date(promotion.ends_at).toLocaleDateString() : 'Sin fin'}
+                                </p>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  <button type="button" onClick={() => handleTogglePromotion(promotion)} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                                    {promotion.is_active ? 'Desactivar' : 'Activar'}
+                                  </button>
+                                  <button type="button" onClick={() => handleDeletePromotion(promotion.id)} className="rounded-lg bg-red-50 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-100">
+                                    Eliminar
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
 
                     {menuItems.length === 0 ? (
                       <div className="text-center py-12">
@@ -1769,6 +2052,112 @@ export function RestaurantDashboard() {
                   </div>
                 )}
 
+                {activeTab === 'reports' && (
+                  <div className="space-y-5">
+                    <div className="flex flex-col gap-1">
+                      <h2 className="text-xl font-bold text-gray-800">Reportes</h2>
+                      <p className="text-sm text-gray-600">Analiza pedidos, facturacion y ventas por producto, cliente y tipo de menu.</p>
+                    </div>
+
+                    <section className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                      <div className="grid gap-3 lg:grid-cols-6">
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-medium text-gray-600">Desde</span>
+                          <input type="date" value={reportDateFrom} onChange={(event) => setReportDateFrom(event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-orange-500" />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-medium text-gray-600">Hasta</span>
+                          <input type="date" value={reportDateTo} onChange={(event) => setReportDateTo(event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-orange-500" />
+                        </label>
+                        <label className="block lg:col-span-2">
+                          <span className="mb-1 block text-xs font-medium text-gray-600">Cliente</span>
+                          <div className="relative">
+                            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                            <input type="search" value={reportCustomerFilter} onChange={(event) => setReportCustomerFilter(event.target.value)} placeholder="Nombre, email o telefono" className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm focus:border-transparent focus:ring-2 focus:ring-orange-500" />
+                          </div>
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-medium text-gray-600">Tipo de menu</span>
+                          <select value={reportCategoryFilter} onChange={(event) => setReportCategoryFilter(event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-orange-500">
+                            <option value="all">Todos</option>
+                            {reportCategoryOptions.map((category) => (
+                              <option key={category} value={category}>{category}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-medium text-gray-600">Modalidad</span>
+                          <select value={reportDeliveryFilter} onChange={(event) => setReportDeliveryFilter(event.target.value as ReportDeliveryFilter)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-orange-500">
+                            <option value="all">Todas</option>
+                            {Object.entries(deliveryMethodLabels).map(([value, label]) => (
+                              <option key={value} value={value}>{label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-medium text-gray-600">Estado</span>
+                          <select value={reportStatusFilter} onChange={(event) => setReportStatusFilter(event.target.value as ReportStatusFilter)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-orange-500">
+                            <option value="all">Todos</option>
+                            {Object.entries(statusLabels).map(([value, label]) => (
+                              <option key={value} value={value}>{label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <div className="flex items-end">
+                          <button
+                            type="button"
+                            disabled={!hasReportFilters}
+                            onClick={() => {
+                              setReportDateFrom('');
+                              setReportDateTo('');
+                              setReportCustomerFilter('');
+                              setReportCategoryFilter('all');
+                              setReportDeliveryFilter('all');
+                              setReportStatusFilter('all');
+                            }}
+                            className="w-full rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Limpiar
+                          </button>
+                        </div>
+                      </div>
+                    </section>
+
+                    <div className="grid gap-3 md:grid-cols-4">
+                      <div className="rounded-lg border border-gray-200 bg-white p-4">
+                        <p className="text-xs font-medium uppercase text-gray-500">Total pedidos</p>
+                        <p className="mt-2 text-2xl font-bold text-gray-800">{reportTotalOrders}</p>
+                      </div>
+                      <div className="rounded-lg border border-gray-200 bg-white p-4">
+                        <p className="text-xs font-medium uppercase text-gray-500">Monto total</p>
+                        <p className="mt-2 text-2xl font-bold text-orange-600">{moneyFormatter.format(reportTotalAmount)}</p>
+                      </div>
+                      <div className="rounded-lg border border-gray-200 bg-white p-4">
+                        <p className="text-xs font-medium uppercase text-gray-500">Productos vendidos</p>
+                        <p className="mt-2 text-2xl font-bold text-gray-800">{reportTotalProducts}</p>
+                      </div>
+                      <div className="rounded-lg border border-gray-200 bg-white p-4">
+                        <p className="text-xs font-medium uppercase text-gray-500">Ticket promedio</p>
+                        <p className="mt-2 text-2xl font-bold text-gray-800">{moneyFormatter.format(reportAverageTicket)}</p>
+                      </div>
+                    </div>
+
+                    {reportOrders.length === 0 ? (
+                      <div className="rounded-lg border border-dashed border-gray-300 bg-white py-10 text-center text-sm text-gray-500">
+                        No hay pedidos para los filtros seleccionados.
+                      </div>
+                    ) : (
+                      <div className="grid gap-5 xl:grid-cols-2">
+                        {renderReportTable('Resumen por menu', reportRowsByMenu, 'No hay productos para mostrar.')}
+                        {renderReportTable('Resumen por cliente', reportRowsByCustomer, 'No hay clientes para mostrar.')}
+                        <div className="xl:col-span-2">
+                          {renderReportTable('Resumen por tipo de menu', reportRowsByCategory, 'No hay categorias para mostrar.')}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {activeTab === 'route' && showOrderDetail && selectedOrder && renderOrderDetailScreen(selectedOrder)}
 
                 {activeTab === 'route' && !showOrderDetail && (
@@ -2086,10 +2475,19 @@ export function RestaurantDashboard() {
         />
       )}
 
+      {showPromotionForm && selectedRestaurant && (
+        <PromotionForm
+          restaurantId={selectedRestaurant.id}
+          menuItems={menuItems}
+          onClose={() => { setShowPromotionForm(false); loadPromotions(); }}
+        />
+      )}
+
       {showOrderForm && selectedRestaurant && (
         <RestaurantOrderForm
           restaurant={selectedRestaurant}
           menuItems={menuItems}
+          promotions={promotions}
           tables={tables}
           tableOrders={orders}
           onClose={() => setShowOrderForm(false)}
@@ -2571,6 +2969,7 @@ function ReservationSettings({
 function RestaurantOrderForm({
   restaurant,
   menuItems,
+  promotions,
   tables,
   tableOrders,
   onClose,
@@ -2578,6 +2977,7 @@ function RestaurantOrderForm({
 }: {
   restaurant: Restaurant;
   menuItems: MenuItem[];
+  promotions: RestaurantPromotion[];
   tables: RestaurantTable[];
   tableOrders: RestaurantOrder[];
   onClose: () => void;
@@ -2593,6 +2993,9 @@ function RestaurantOrderForm({
   };
 
   const availableItems = menuItems.filter((item) => item.is_available);
+  const activePromotions = promotions.filter(isPromotionCurrent);
+  const comboPromotions = activePromotions.filter((promotion) => promotion.promotion_type === 'combo');
+  const discountPromotions = activePromotions.filter((promotion) => promotion.promotion_type === 'discount');
   const activeTables = tables.filter((table) => table.is_active);
   const [customer, setCustomer] = useState({ id: '', fullName: '', email: '', phone: '' });
   const [matchedCustomer, setMatchedCustomer] = useState(false);
@@ -2620,9 +3023,37 @@ function RestaurantOrderForm({
     items: Array<{ name: string; quantity: number; subtotal: number }>;
   } | null>(null);
 
+  function getItemDiscountPromotion(itemId: string) {
+    return discountPromotions.find((promotion) =>
+      (promotion.items || []).some((item) => item.menu_item_id === itemId)
+    ) || null;
+  }
+
+  function getItemOrderPrice(item: MenuItem) {
+    const promotion = getItemDiscountPromotion(item.id);
+    return promotion ? getDiscountedPrice(item.price, promotion) : item.price;
+  }
+
+  function getComboBaseTotal(promotion: RestaurantPromotion) {
+    return (promotion.items || []).reduce(
+      (sum, item) => sum + Number(item.menu_item?.price || 0) * item.quantity,
+      0,
+    );
+  }
+
+  function getPromotionOrderPrice(promotion: RestaurantPromotion) {
+    return promotion.discount_type === 'fixed_price'
+      ? Number(promotion.discount_value)
+      : getDiscountedPrice(getComboBaseTotal(promotion), promotion);
+  }
+
   const selectedItems = availableItems.filter((item) => (quantities[item.id] || 0) > 0);
+  const selectedPromotions = comboPromotions.filter((promotion) => (quantities[`promotion:${promotion.id}`] || 0) > 0);
   const total = selectedItems.reduce(
-    (sum, item) => sum + item.price * (quantities[item.id] || 0),
+    (sum, item) => sum + getItemOrderPrice(item) * (quantities[item.id] || 0),
+    0,
+  ) + selectedPromotions.reduce(
+    (sum, promotion) => sum + getPromotionOrderPrice(promotion) * (quantities[`promotion:${promotion.id}`] || 0),
     0,
   );
   const normalizedProductSearchTerm = productSearchTerm.trim().toLocaleLowerCase('es');
@@ -2632,6 +3063,13 @@ function RestaurantOrderForm({
     return item.name.toLocaleLowerCase('es').includes(normalizedProductSearchTerm)
       || (item.description || '').toLocaleLowerCase('es').includes(normalizedProductSearchTerm)
       || (item.category || '').toLocaleLowerCase('es').includes(normalizedProductSearchTerm);
+  });
+  const filteredComboOptions = comboPromotions.filter((promotion) => {
+    if (!normalizedProductSearchTerm) return true;
+
+    return promotion.name.toLocaleLowerCase('es').includes(normalizedProductSearchTerm)
+      || (promotion.description || '').toLocaleLowerCase('es').includes(normalizedProductSearchTerm)
+      || (promotion.items || []).some((item) => item.menu_item?.name.toLocaleLowerCase('es').includes(normalizedProductSearchTerm));
   });
 
   function setQuantity(itemId: string, value: number) {
@@ -2710,7 +3148,9 @@ function RestaurantOrderForm({
     e.preventDefault();
     const items = Object.entries(quantities)
       .filter(([, quantity]) => quantity > 0)
-      .map(([menuItemId, quantity]) => ({ menuItemId, quantity }));
+      .map(([itemId, quantity]) => itemId.startsWith('promotion:')
+        ? { promotionId: itemId.replace('promotion:', ''), quantity }
+        : { menuItemId: itemId, quantity });
 
     if (items.length === 0) {
       setError('Selecciona al menos un producto.');
@@ -2734,10 +3174,15 @@ function RestaurantOrderForm({
       existingQuantities.set(item.menu_item_id, (existingQuantities.get(item.menu_item_id) || 0) + item.quantity);
     }
     for (const item of items) {
-      existingQuantities.set(item.menuItemId, (existingQuantities.get(item.menuItemId) || 0) + item.quantity);
+      if ('menuItemId' in item) {
+        existingQuantities.set(item.menuItemId, (existingQuantities.get(item.menuItemId) || 0) + item.quantity);
+      }
     }
     const itemsToSave = activeTableOrder
-      ? [...existingQuantities.entries()].map(([menuItemId, quantity]) => ({ menuItemId, quantity }))
+      ? [
+          ...[...existingQuantities.entries()].map(([menuItemId, quantity]) => ({ menuItemId, quantity })),
+          ...items.filter((item): item is { promotionId: string; quantity: number } => 'promotionId' in item),
+        ]
       : items;
 
     let addressToSave = deliveryAddress.trim();
@@ -2785,11 +3230,22 @@ function RestaurantOrderForm({
           ? `Mesa ${tables.find((table) => table.id === diningTableId)?.table_number || ''}`
           : restaurant.address || 'Retira en el restaurante',
       totalAmount: activeTableOrder ? Number(data.totalAmount || total) : total,
-      items: items.map((item) => ({
-        name: availableItems.find((menuItem) => menuItem.id === item.menuItemId)?.name || 'Producto',
-        quantity: item.quantity,
-        subtotal: (availableItems.find((menuItem) => menuItem.id === item.menuItemId)?.price || 0) * item.quantity,
-      })),
+      items: items.map((item) => {
+        if ('promotionId' in item) {
+          const promotion = comboPromotions.find((current) => current.id === item.promotionId);
+          return {
+            name: promotion?.name || 'Promocion',
+            quantity: item.quantity,
+            subtotal: (promotion ? getPromotionOrderPrice(promotion) : 0) * item.quantity,
+          };
+        }
+        const menuItem = availableItems.find((current) => current.id === item.menuItemId);
+        return {
+          name: menuItem?.name || 'Producto',
+          quantity: item.quantity,
+          subtotal: (menuItem ? getItemOrderPrice(menuItem) : 0) * item.quantity,
+        };
+      }),
     });
     setShowSuccessMessage(true);
   }
@@ -2844,17 +3300,37 @@ function RestaurantOrderForm({
             </div>
             {availableItems.length === 0 ? (
               <p className="text-sm text-gray-500">No hay productos disponibles.</p>
-            ) : selectedItems.length === 0 ? (
+            ) : selectedItems.length === 0 && selectedPromotions.length === 0 ? (
               <div className="rounded-lg border border-dashed border-gray-300 py-8 text-center text-sm text-gray-500">
                 No agregaste productos al pedido.
               </div>
             ) : (
               <div className="space-y-2">
+                {selectedPromotions.map((promotion) => {
+                  const key = `promotion:${promotion.id}`;
+                  return (
+                    <div key={key} className="flex items-center justify-between gap-3 rounded-lg bg-orange-50 px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-gray-800">{promotion.name}</p>
+                        <p className="text-xs text-orange-700">{moneyFormatter.format(getPromotionOrderPrice(promotion))} combo</p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <input type="number" min="1" step="1" value={quantities[key] || 1} onChange={(e) => setQuantity(key, Number(e.target.value))} className="w-20 rounded-md border border-gray-300 px-2 py-1 text-center" aria-label={`Cantidad de ${promotion.name}`} />
+                        <button type="button" onClick={() => removeSelectedProduct(key)} className="rounded-md p-2 text-red-500 hover:bg-red-50" aria-label={`Quitar ${promotion.name}`}>
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
                 {selectedItems.map((item) => (
                   <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg bg-gray-50 px-3 py-2">
                     <div className="min-w-0">
                       <p className="truncate text-sm font-medium text-gray-800">{item.name}</p>
-                      <p className="text-xs text-gray-500">{moneyFormatter.format(item.price)} c/u</p>
+                      <p className="text-xs text-gray-500">
+                        {moneyFormatter.format(getItemOrderPrice(item))} c/u
+                        {getItemDiscountPromotion(item.id) && <span className="ml-1 text-orange-600">promo</span>}
+                      </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
                       <input type="number" min="1" step="1" value={quantities[item.id] || 1} onChange={(e) => setQuantity(item.id, Number(e.target.value))} className="w-20 rounded-md border border-gray-300 px-2 py-1 text-center" aria-label={`Cantidad de ${item.name}`} />
@@ -2933,15 +3409,45 @@ function RestaurantOrderForm({
               </div>
             </div>
             <div className="overflow-auto p-4">
-              {filteredProductOptions.length === 0 ? (
+              {filteredProductOptions.length === 0 && filteredComboOptions.length === 0 ? (
                 <p className="rounded-lg border border-dashed border-gray-300 p-8 text-center text-sm text-gray-500">No se encontraron productos.</p>
               ) : (
                 <div className="space-y-2">
+                  {filteredComboOptions.map((promotion) => {
+                    const key = `promotion:${promotion.id}`;
+                    const comboItems = (promotion.items || []).map((item) => `${item.quantity}x ${item.menu_item?.name || 'Producto'}`).join(', ');
+                    return (
+                      <div key={key} className="grid gap-3 rounded-lg border border-orange-200 bg-orange-50 p-3 sm:grid-cols-[minmax(0,1fr)_90px_auto] sm:items-center">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-gray-800">{promotion.name}</p>
+                          <p className="text-xs text-orange-700">{moneyFormatter.format(getPromotionOrderPrice(promotion))} - Combo</p>
+                          <p className="mt-1 line-clamp-2 text-xs text-gray-600">{comboItems}</p>
+                        </div>
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={pickerQuantities[key] || 1}
+                          onChange={(event) => setPickerQuantities((current) => ({ ...current, [key]: Math.max(1, Math.floor(Number(event.target.value) || 1)) }))}
+                          className="w-full rounded-md border border-gray-300 px-2 py-2 text-center"
+                          aria-label={`Cantidad de ${promotion.name}`}
+                        />
+                        <button type="button" onClick={() => addProductToOrder(key)} className="inline-flex items-center justify-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600">
+                          <Plus className="h-4 w-4" />
+                          Agregar
+                        </button>
+                      </div>
+                    );
+                  })}
                   {filteredProductOptions.map((item) => (
                     <div key={item.id} className="grid gap-3 rounded-lg border border-gray-200 p-3 sm:grid-cols-[minmax(0,1fr)_90px_auto] sm:items-center">
                       <div className="min-w-0">
                         <p className="truncate text-sm font-semibold text-gray-800">{item.name}</p>
-                        <p className="text-xs text-gray-500">{moneyFormatter.format(item.price)}{item.category ? ` - ${item.category}` : ''}</p>
+                        <p className="text-xs text-gray-500">
+                          {moneyFormatter.format(getItemOrderPrice(item))}
+                          {getItemDiscountPromotion(item.id) && <span className="ml-1 text-orange-600">promo</span>}
+                          {item.category ? ` - ${item.category}` : ''}
+                        </p>
                         {item.description && <p className="mt-1 line-clamp-2 text-xs text-gray-500">{item.description}</p>}
                       </div>
                       <input
@@ -3036,6 +3542,176 @@ function RestaurantOrderForm({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function PromotionForm({ restaurantId, menuItems, onClose }: { restaurantId: string; menuItems: MenuItem[]; onClose: () => void }) {
+  const availableItems = menuItems.filter((item) => item.is_available);
+  const [form, setForm] = useState({
+    name: '',
+    description: '',
+    promotionType: 'combo' as RestaurantPromotion['promotion_type'],
+    discountType: 'fixed_price' as RestaurantPromotion['discount_type'],
+    discountValue: '',
+    startsAt: '',
+    endsAt: '',
+    isActive: true,
+  });
+  const [selectedItems, setSelectedItems] = useState<Record<string, number>>({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const selectedMenuItems = availableItems.filter((item) => selectedItems[item.id] > 0);
+
+  function setPromotionType(value: RestaurantPromotion['promotion_type']) {
+    setForm({
+      ...form,
+      promotionType: value,
+      discountType: value === 'combo' ? 'fixed_price' : 'percentage',
+    });
+  }
+
+  function toggleItem(itemId: string) {
+    setSelectedItems((current) => {
+      const next = { ...current };
+      if (next[itemId]) delete next[itemId];
+      else next[itemId] = 1;
+      return next;
+    });
+  }
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    setError('');
+
+    const discountValue = Number(form.discountValue);
+    if (!form.name.trim() || !Number.isFinite(discountValue) || discountValue < 0 || selectedMenuItems.length === 0) {
+      setError('Completa nombre, valor y al menos un producto.');
+      return;
+    }
+    if (form.promotionType === 'discount' && form.discountType === 'percentage' && discountValue > 100) {
+      setError('El porcentaje no puede superar 100%.');
+      return;
+    }
+    if (form.endsAt && form.startsAt && new Date(form.endsAt) < new Date(form.startsAt)) {
+      setError('La fecha de fin no puede ser anterior al inicio.');
+      return;
+    }
+
+    setLoading(true);
+    const { data: promotion, error: promotionError } = await supabase
+      .from('restaurant_promotions')
+      .insert({
+        restaurant_id: restaurantId,
+        name: form.name.trim(),
+        description: form.description.trim() || null,
+        promotion_type: form.promotionType,
+        discount_type: form.discountType,
+        discount_value: discountValue,
+        starts_at: form.startsAt ? new Date(form.startsAt).toISOString() : null,
+        ends_at: form.endsAt ? new Date(form.endsAt).toISOString() : null,
+        is_active: form.isActive,
+      })
+      .select('id')
+      .single();
+
+    if (promotionError || !promotion) {
+      setLoading(false);
+      setError('No se pudo crear la promocion.');
+      return;
+    }
+
+    const { error: itemsError } = await supabase
+      .from('restaurant_promotion_items')
+      .insert(selectedMenuItems.map((item) => ({
+        promotion_id: promotion.id,
+        menu_item_id: item.id,
+        quantity: Math.max(1, selectedItems[item.id] || 1),
+      })));
+
+    setLoading(false);
+    if (itemsError) {
+      await supabase.from('restaurant_promotions').delete().eq('id', promotion.id);
+      setError('No se pudieron guardar los productos de la promocion.');
+      return;
+    }
+
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
+        <div className="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-bold text-gray-800">Agregar promocion</h2>
+            <p className="text-sm text-gray-600">Crea combos con precio especial o descuentos por fecha.</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-md p-2 text-gray-500 hover:bg-gray-100" aria-label="Cerrar">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Nombre de la promocion" className="rounded-lg border border-gray-300 px-3 py-2 text-sm sm:col-span-2" />
+            <textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Descripcion opcional" rows={2} className="rounded-lg border border-gray-300 px-3 py-2 text-sm sm:col-span-2" />
+            <select value={form.promotionType} onChange={(event) => setPromotionType(event.target.value as RestaurantPromotion['promotion_type'])} className="rounded-lg border border-gray-300 px-3 py-2 text-sm">
+              <option value="combo">Combo con precio especial</option>
+              <option value="discount">Producto con descuento</option>
+            </select>
+            <select value={form.discountType} onChange={(event) => setForm({ ...form, discountType: event.target.value as RestaurantPromotion['discount_type'] })} className="rounded-lg border border-gray-300 px-3 py-2 text-sm">
+              {form.promotionType === 'combo' && <option value="fixed_price">Precio final del combo</option>}
+              {form.promotionType === 'discount' && <option value="percentage">Porcentaje de descuento</option>}
+              {form.promotionType === 'discount' && <option value="amount">Monto fijo de descuento</option>}
+              {form.promotionType === 'discount' && <option value="fixed_price">Precio final del producto</option>}
+            </select>
+            <input required type="number" min="0" step="0.01" value={form.discountValue} onChange={(event) => setForm({ ...form, discountValue: event.target.value })} placeholder={form.discountType === 'percentage' ? 'Porcentaje' : 'Importe'} className="rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+            <label className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700">
+              <input type="checkbox" checked={form.isActive} onChange={(event) => setForm({ ...form, isActive: event.target.checked })} />
+              Activa
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-gray-600">Inicio</span>
+              <input type="datetime-local" value={form.startsAt} onChange={(event) => setForm({ ...form, startsAt: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-gray-600">Fin</span>
+              <input type="datetime-local" value={form.endsAt} onChange={(event) => setForm({ ...form, endsAt: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+            </label>
+          </div>
+
+          <section className="rounded-lg border border-gray-200 p-3">
+            <h3 className="mb-3 font-semibold text-gray-800">Productos incluidos</h3>
+            {availableItems.length === 0 ? (
+              <p className="text-sm text-gray-500">No hay productos disponibles.</p>
+            ) : (
+              <div className="max-h-64 space-y-2 overflow-auto">
+                {availableItems.map((item) => (
+                  <div key={item.id} className="grid gap-2 rounded-lg bg-gray-50 px-3 py-2 sm:grid-cols-[auto_minmax(0,1fr)_90px] sm:items-center">
+                    <input type="checkbox" checked={Boolean(selectedItems[item.id])} onChange={() => toggleItem(item.id)} />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-gray-800">{item.name}</p>
+                      <p className="text-xs text-gray-500">{moneyFormatter.format(item.price)}{item.category ? ` - ${item.category}` : ''}</p>
+                    </div>
+                    <input type="number" min="1" step="1" disabled={!selectedItems[item.id]} value={selectedItems[item.id] || 1} onChange={(event) => setSelectedItems((current) => ({ ...current, [item.id]: Math.max(1, Math.floor(Number(event.target.value) || 1)) }))} className="rounded-md border border-gray-300 px-2 py-1 text-center text-sm disabled:opacity-50" aria-label={`Cantidad de ${item.name}`} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+
+          <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+            <button type="button" onClick={onClose} className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50">Cancelar</button>
+            <button type="submit" disabled={loading || availableItems.length === 0} className="rounded-lg bg-orange-500 px-4 py-2 font-semibold text-white hover:bg-orange-600 disabled:opacity-50">
+              {loading ? 'Guardando...' : 'Guardar promocion'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

@@ -47,6 +47,132 @@ function parseOptionalCoordinate(value: unknown, min: number, max: number) {
     : null;
 }
 
+function isPromotionCurrent(promotion: { is_active: boolean; starts_at: string | null; ends_at: string | null }) {
+  if (!promotion.is_active) return false;
+  const now = new Date();
+  if (promotion.starts_at && new Date(promotion.starts_at) > now) return false;
+  if (promotion.ends_at && new Date(promotion.ends_at) < now) return false;
+  return true;
+}
+
+function getDiscountedPrice(price: number, promotion: { discount_type: string; discount_value: number | string }) {
+  const value = Number(promotion.discount_value || 0);
+  if (promotion.discount_type === "fixed_price") return Math.max(0, value);
+  if (promotion.discount_type === "percentage") return Math.max(0, price * (1 - value / 100));
+  return Math.max(0, price - value);
+}
+
+async function buildOrderItems(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  restaurantId: string,
+  requestedItems: Array<Record<string, unknown>>,
+  orderId?: string,
+) {
+  const menuQuantities = new Map<string, number>();
+  const promotionQuantities = new Map<string, number>();
+
+  for (const item of requestedItems) {
+    const menuItemId = String(item.menuItemId || "");
+    const promotionId = String(item.promotionId || "");
+    const quantity = Number(item.quantity);
+    if ((!menuItemId && !promotionId) || !Number.isInteger(quantity) || quantity <= 0) {
+      throw new Error("Hay productos o cantidades invalidas");
+    }
+    if (promotionId) promotionQuantities.set(promotionId, (promotionQuantities.get(promotionId) || 0) + quantity);
+    else menuQuantities.set(menuItemId, (menuQuantities.get(menuItemId) || 0) + quantity);
+  }
+
+  const activePromotionsResponse = await fetch(
+    `${supabaseUrl}/rest/v1/restaurant_promotions?restaurant_id=eq.${encodeURIComponent(restaurantId)}&is_active=eq.true&select=id,name,promotion_type,discount_type,discount_value,starts_at,ends_at,is_active`,
+    { headers: serviceHeaders(serviceRoleKey) },
+  );
+  const activePromotions = (activePromotionsResponse.ok ? await activePromotionsResponse.json() : [])
+    .filter(isPromotionCurrent) as Array<{
+      id: string;
+      name: string;
+      promotion_type: "combo" | "discount";
+      discount_type: "fixed_price" | "percentage" | "amount";
+      discount_value: number | string;
+      starts_at: string | null;
+      ends_at: string | null;
+      is_active: boolean;
+    }>;
+  const activePromotionIds = activePromotions.map((promotion) => promotion.id);
+  const promotionItemsResponse = activePromotionIds.length > 0
+    ? await fetch(
+      `${supabaseUrl}/rest/v1/restaurant_promotion_items?promotion_id=in.(${activePromotionIds.map(encodeURIComponent).join(",")})&select=promotion_id,menu_item_id,quantity`,
+      { headers: serviceHeaders(serviceRoleKey) },
+    )
+    : null;
+  const promotionItems = promotionItemsResponse?.ok ? await promotionItemsResponse.json() as Array<{ promotion_id: string; menu_item_id: string; quantity: number }> : [];
+  const comboPromotions = activePromotions.filter((promotion) => promotion.promotion_type === "combo");
+  const discountPromotions = activePromotions.filter((promotion) => promotion.promotion_type === "discount");
+
+  for (const promotionId of promotionQuantities.keys()) {
+    if (!comboPromotions.some((promotion) => promotion.id === promotionId)) {
+      throw new Error("Una o mas promociones no estan disponibles");
+    }
+  }
+
+  const comboMenuIds = promotionItems
+    .filter((item) => promotionQuantities.has(item.promotion_id))
+    .map((item) => item.menu_item_id);
+  const requiredMenuIds = Array.from(new Set([...menuQuantities.keys(), ...comboMenuIds]));
+  if (requiredMenuIds.length === 0) throw new Error("Faltan datos obligatorios del pedido");
+
+  const menuResponse = await fetch(
+    `${supabaseUrl}/rest/v1/menu_items?restaurant_id=eq.${encodeURIComponent(restaurantId)}&id=in.(${requiredMenuIds.map(encodeURIComponent).join(",")})&is_available=eq.true&select=id,price`,
+    { headers: serviceHeaders(serviceRoleKey) },
+  );
+  const menuItems = menuResponse.ok ? await menuResponse.json() as Array<{ id: string; price: number | string }> : [];
+  if (menuItems.length !== requiredMenuIds.length) {
+    throw new Error("Uno o mas productos no estan disponibles");
+  }
+
+  const menuById = new Map(menuItems.map((item) => [item.id, Number(item.price)]));
+  const orderItems: Array<{ order_id?: string; menu_item_id: string; quantity: number; unit_price: number; subtotal: number }> = [];
+
+  for (const [menuItemId, quantity] of menuQuantities.entries()) {
+    const basePrice = menuById.get(menuItemId)!;
+    const activeDiscounts = discountPromotions.filter((promotion) =>
+      promotionItems.some((item) => item.promotion_id === promotion.id && item.menu_item_id === menuItemId)
+    );
+    const unitPrice = activeDiscounts.reduce(
+      (best, promotion) => Math.min(best, getDiscountedPrice(basePrice, promotion)),
+      basePrice,
+    );
+    orderItems.push({ ...(orderId ? { order_id: orderId } : {}), menu_item_id: menuItemId, quantity, unit_price: unitPrice, subtotal: unitPrice * quantity });
+  }
+
+  for (const [promotionId, comboQuantity] of promotionQuantities.entries()) {
+    const promotion = comboPromotions.find((current) => current.id === promotionId)!;
+    const items = promotionItems.filter((item) => item.promotion_id === promotionId);
+    if (items.length === 0) throw new Error("La promocion no tiene productos");
+    const baseTotal = items.reduce((sum, item) => sum + (menuById.get(item.menu_item_id) || 0) * item.quantity, 0);
+    const comboUnitTotal = getDiscountedPrice(baseTotal, promotion);
+
+    for (const item of items) {
+      const componentBase = (menuById.get(item.menu_item_id) || 0) * item.quantity;
+      const componentSubtotalPerCombo = baseTotal > 0 ? comboUnitTotal * (componentBase / baseTotal) : comboUnitTotal / items.length;
+      const quantity = item.quantity * comboQuantity;
+      const subtotal = componentSubtotalPerCombo * comboQuantity;
+      orderItems.push({
+        ...(orderId ? { order_id: orderId } : {}),
+        menu_item_id: item.menu_item_id,
+        quantity,
+        unit_price: quantity > 0 ? subtotal / quantity : 0,
+        subtotal,
+      });
+    }
+  }
+
+  return {
+    orderItems,
+    totalAmount: orderItems.reduce((total, item) => total + item.subtotal, 0),
+  };
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -150,32 +276,7 @@ Deno.serve(async (req: Request) => {
         return json({ error: "No se puede editar un pedido cerrado" }, 400);
       }
 
-      const quantities = new Map<string, number>();
-      for (const item of requestedItems) {
-        const menuItemId = String(item.menuItemId || "");
-        const quantity = Number(item.quantity);
-        if (!menuItemId || !Number.isInteger(quantity) || quantity <= 0) {
-          return json({ error: "Hay productos o cantidades invalidas" }, 400);
-        }
-        quantities.set(menuItemId, (quantities.get(menuItemId) || 0) + quantity);
-      }
-
-      const idsFilter = [...quantities.keys()].map(encodeURIComponent).join(",");
-      const menuResponse = await fetch(
-        `${supabaseUrl}/rest/v1/menu_items?restaurant_id=eq.${encodeURIComponent(restaurantId)}&id=in.(${idsFilter})&is_available=eq.true&select=id,price`,
-        { headers: serviceHeaders(serviceRoleKey) },
-      );
-      const menuItems = menuResponse.ok ? await menuResponse.json() : [];
-      if (menuItems.length !== quantities.size) {
-        return json({ error: "Uno o mas productos no estan disponibles" }, 400);
-      }
-
-      const orderItems = menuItems.map((item: { id: string; price: number | string }) => {
-        const quantity = quantities.get(item.id)!;
-        const unitPrice = Number(item.price);
-        return { order_id: orderId, menu_item_id: item.id, quantity, unit_price: unitPrice, subtotal: unitPrice * quantity };
-      });
-      const totalAmount = orderItems.reduce((total: number, item: { subtotal: number }) => total + item.subtotal, 0);
+      const { orderItems, totalAmount } = await buildOrderItems(supabaseUrl, serviceRoleKey, restaurantId, requestedItems, orderId);
 
       const deleteItemsResponse = await fetch(
         `${supabaseUrl}/rest/v1/order_items?order_id=eq.${encodeURIComponent(orderId)}`,
@@ -256,25 +357,7 @@ Deno.serve(async (req: Request) => {
       if (!diningTables[0]) return json({ error: "La mesa seleccionada no esta disponible" }, 400);
     }
 
-    const quantities = new Map<string, number>();
-    for (const item of requestedItems) {
-      const menuItemId = String(item.menuItemId || "");
-      const quantity = Number(item.quantity);
-      if (!menuItemId || !Number.isInteger(quantity) || quantity <= 0) {
-        return json({ error: "Hay productos o cantidades invalidas" }, 400);
-      }
-      quantities.set(menuItemId, (quantities.get(menuItemId) || 0) + quantity);
-    }
-
-    const idsFilter = [...quantities.keys()].map(encodeURIComponent).join(",");
-    const menuResponse = await fetch(
-      `${supabaseUrl}/rest/v1/menu_items?restaurant_id=eq.${encodeURIComponent(restaurantId)}&id=in.(${idsFilter})&is_available=eq.true&select=id,price`,
-      { headers: serviceHeaders(serviceRoleKey) },
-    );
-    const menuItems = menuResponse.ok ? await menuResponse.json() : [];
-    if (menuItems.length !== quantities.size) {
-      return json({ error: "Uno o mas productos no estan disponibles" }, 400);
-    }
+    const { orderItems, totalAmount } = await buildOrderItems(supabaseUrl, serviceRoleKey, restaurantId, requestedItems);
 
     let profiles: Array<{ id: string; role: string }> = [];
     if (requestedCustomerId) {
@@ -290,12 +373,6 @@ Deno.serve(async (req: Request) => {
       return json({ error: "El cliente seleccionado no es valido" }, 400);
     }
 
-    const orderItems = menuItems.map((item: { id: string; price: number | string }) => {
-      const quantity = quantities.get(item.id)!;
-      const unitPrice = Number(item.price);
-      return { menu_item_id: item.id, quantity, unit_price: unitPrice, subtotal: unitPrice * quantity };
-    });
-    const totalAmount = orderItems.reduce((total: number, item: { subtotal: number }) => total + item.subtotal, 0);
     const address = deliveryMethod === "pickup"
       ? String(restaurants[0].address || "Retira en restaurante")
       : deliveryMethod === "dine_in"
