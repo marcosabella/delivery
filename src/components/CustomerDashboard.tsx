@@ -4,7 +4,7 @@ import { supabase, Restaurant, MenuItem, Order, Profile } from '../lib/supabase'
 import { useGeolocation } from '../hooks/useGeolocation';
 import { addDefaultLocality } from '../lib/address';
 import { customerOrderStatusLabels, getCustomerOrderStatusMessage, getOrderNotificationPermissionState, OrderNotificationPermissionState, requestOrderNotificationPermission, shouldNotifyCustomerOrderStatus, showOrderBrowserNotification } from '../lib/orderStatusNotifications';
-import { LogOut, Store, ShoppingCart, Clock, MapPin, Search, X, User, AlertCircle, CheckCircle, Home, Pencil, Menu, BellRing } from 'lucide-react';
+import { LogOut, Store, ShoppingCart, Clock, MapPin, Search, X, User, AlertCircle, CheckCircle, Home, Pencil, Menu, BellRing, Heart } from 'lucide-react';
 import { MessageModal } from './MessageModal';
 
 type CartItem = MenuItem & { quantity: number };
@@ -36,6 +36,8 @@ export function CustomerDashboard() {
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [cart, setCart] = useState<CartItem[]>(readStoredCart);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [favoriteRestaurantIds, setFavoriteRestaurantIds] = useState<Set<string>>(() => new Set());
+  const [favoriteMenuItemIds, setFavoriteMenuItemIds] = useState<Set<string>>(() => new Set());
   const [showProfile, setShowProfile] = useState(false);
   const [activeView, setActiveView] = useState<'restaurants' | 'cart' | 'orders'>('restaurants');
   const [searchQuery, setSearchQuery] = useState('');
@@ -53,8 +55,11 @@ export function CustomerDashboard() {
 
   useEffect(() => {
     loadRestaurants();
-    loadOrders();
-  }, []);
+    if (profile?.id) {
+      loadOrders();
+      loadFavorites();
+    }
+  }, [profile?.id]);
 
   useEffect(() => {
     if (!profile?.id) return;
@@ -136,6 +141,100 @@ export function CustomerDashboard() {
     }
 
     setOrders(data);
+  }
+
+  async function loadFavorites() {
+    if (!profile?.id) return;
+
+    const [{ data: restaurantFavorites }, { data: menuItemFavorites }] = await Promise.all([
+      supabase
+        .from('customer_favorite_restaurants')
+        .select('restaurant_id')
+        .eq('customer_id', profile.id),
+      supabase
+        .from('customer_favorite_menu_items')
+        .select('menu_item_id')
+        .eq('customer_id', profile.id),
+    ]);
+
+    setFavoriteRestaurantIds(new Set((restaurantFavorites || []).map((favorite) => favorite.restaurant_id as string)));
+    setFavoriteMenuItemIds(new Set((menuItemFavorites || []).map((favorite) => favorite.menu_item_id as string)));
+  }
+
+  async function toggleFavoriteRestaurant(restaurantId: string) {
+    if (!profile?.id) return;
+
+    const wasFavorite = favoriteRestaurantIds.has(restaurantId);
+    setFavoriteRestaurantIds((current) => {
+      const next = new Set(current);
+      if (wasFavorite) {
+        next.delete(restaurantId);
+      } else {
+        next.add(restaurantId);
+      }
+      return next;
+    });
+
+    const { error } = wasFavorite
+      ? await supabase
+          .from('customer_favorite_restaurants')
+          .delete()
+          .eq('customer_id', profile.id)
+          .eq('restaurant_id', restaurantId)
+      : await supabase
+          .from('customer_favorite_restaurants')
+          .insert({ customer_id: profile.id, restaurant_id: restaurantId });
+
+    if (error) {
+      setFavoriteRestaurantIds((current) => {
+        const next = new Set(current);
+        if (wasFavorite) {
+          next.add(restaurantId);
+        } else {
+          next.delete(restaurantId);
+        }
+        return next;
+      });
+      setModalMessage({ type: 'error', message: 'No se pudo actualizar el restaurante favorito.' });
+    }
+  }
+
+  async function toggleFavoriteMenuItem(menuItemId: string) {
+    if (!profile?.id) return;
+
+    const wasFavorite = favoriteMenuItemIds.has(menuItemId);
+    setFavoriteMenuItemIds((current) => {
+      const next = new Set(current);
+      if (wasFavorite) {
+        next.delete(menuItemId);
+      } else {
+        next.add(menuItemId);
+      }
+      return next;
+    });
+
+    const { error } = wasFavorite
+      ? await supabase
+          .from('customer_favorite_menu_items')
+          .delete()
+          .eq('customer_id', profile.id)
+          .eq('menu_item_id', menuItemId)
+      : await supabase
+          .from('customer_favorite_menu_items')
+          .insert({ customer_id: profile.id, menu_item_id: menuItemId });
+
+    if (error) {
+      setFavoriteMenuItemIds((current) => {
+        const next = new Set(current);
+        if (wasFavorite) {
+          next.add(menuItemId);
+        } else {
+          next.delete(menuItemId);
+        }
+        return next;
+      });
+      setModalMessage({ type: 'error', message: 'No se pudo actualizar el producto favorito.' });
+    }
   }
 
   function addToCart(item: MenuItem) {
@@ -268,9 +367,17 @@ export function CustomerDashboard() {
     setModalMessage({ type: 'success', message: 'Pedido realizado con éxito.' });
   }
 
-  const filteredRestaurants = restaurants.filter((r) =>
-    r.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredRestaurants = restaurants
+    .filter((r) => r.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    .sort((a, b) => {
+      const favoriteDiff = Number(favoriteRestaurantIds.has(b.id)) - Number(favoriteRestaurantIds.has(a.id));
+      return favoriteDiff || a.name.localeCompare(b.name);
+    });
+
+  const sortedMenuItems = [...menuItems].sort((a, b) => {
+    const favoriteDiff = Number(favoriteMenuItemIds.has(b.id)) - Number(favoriteMenuItemIds.has(a.id));
+    return favoriteDiff || a.name.localeCompare(b.name);
+  });
 
   const statusColors: Record<Order['status'], string> = {
     pending: 'bg-yellow-100 text-yellow-800',
@@ -768,13 +875,35 @@ export function CustomerDashboard() {
                     onClick={() => setSelectedRestaurant(restaurant)}
                     className="group cursor-pointer overflow-hidden rounded-lg bg-white shadow-sm transition hover:shadow-md"
                   >
-                    <div className="flex h-28 items-center justify-center bg-slate-100">
+                    <div className="relative flex h-28 items-center justify-center bg-slate-100">
                       <Store className="h-8 w-8 text-slate-400" />
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void toggleFavoriteRestaurant(restaurant.id);
+                        }}
+                        className={`absolute right-3 top-3 rounded-full p-2 shadow-sm transition ${
+                          favoriteRestaurantIds.has(restaurant.id)
+                            ? 'bg-red-500 text-white hover:bg-red-600'
+                            : 'bg-white text-slate-500 hover:bg-red-50 hover:text-red-500'
+                        }`}
+                        aria-label={favoriteRestaurantIds.has(restaurant.id) ? 'Quitar restaurante de favoritos' : 'Agregar restaurante a favoritos'}
+                      >
+                        <Heart className={`h-4 w-4 ${favoriteRestaurantIds.has(restaurant.id) ? 'fill-current' : ''}`} />
+                      </button>
                     </div>
                     <div className="p-4">
-                      <h3 className="mb-1 font-semibold text-gray-800 transition group-hover:text-orange-500">
-                        {restaurant.name}
-                      </h3>
+                      <div className="mb-1 flex items-start gap-2">
+                        <h3 className="min-w-0 flex-1 font-semibold text-gray-800 transition group-hover:text-orange-500">
+                          {restaurant.name}
+                        </h3>
+                        {favoriteRestaurantIds.has(restaurant.id) && (
+                          <span className="shrink-0 rounded-full bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-600">
+                            Favorito
+                          </span>
+                        )}
+                      </div>
                       <p className="text-gray-600 text-sm mb-3 line-clamp-2">{restaurant.description}</p>
                       <div className="flex items-center text-sm text-gray-500">
                         <MapPin className="w-4 h-4 mr-1" />
@@ -796,8 +925,8 @@ export function CustomerDashboard() {
             </button>
 
             <div className="mb-4 rounded-lg bg-white p-4 shadow-sm">
-              <div className="flex items-start justify-between">
-                <div>
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
                   <h1 className="mb-1 text-xl font-semibold text-gray-800">{selectedRestaurant.name}</h1>
                   <p className="text-gray-600 mb-2">{selectedRestaurant.description}</p>
                   <div className="flex items-center text-sm text-gray-500">
@@ -805,6 +934,18 @@ export function CustomerDashboard() {
                     {selectedRestaurant.address}
                   </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => void toggleFavoriteRestaurant(selectedRestaurant.id)}
+                  className={`shrink-0 rounded-full p-2 transition ${
+                    favoriteRestaurantIds.has(selectedRestaurant.id)
+                      ? 'bg-red-500 text-white hover:bg-red-600'
+                      : 'bg-slate-100 text-slate-500 hover:bg-red-50 hover:text-red-500'
+                  }`}
+                  aria-label={favoriteRestaurantIds.has(selectedRestaurant.id) ? 'Quitar restaurante de favoritos' : 'Agregar restaurante a favoritos'}
+                >
+                  <Heart className={`h-5 w-5 ${favoriteRestaurantIds.has(selectedRestaurant.id) ? 'fill-current' : ''}`} />
+                </button>
               </div>
             </div>
 
@@ -814,15 +955,31 @@ export function CustomerDashboard() {
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {menuItems.map((item) => (
+                {sortedMenuItems.map((item) => (
                   <div key={item.id} className="overflow-hidden rounded-lg bg-white shadow-sm transition hover:shadow-md">
-                    <div className="flex h-24 items-center justify-center bg-slate-100">
+                    <div className="relative flex h-24 items-center justify-center bg-slate-100">
                       <Store className="h-7 w-7 text-slate-400" />
+                      <button
+                        type="button"
+                        onClick={() => void toggleFavoriteMenuItem(item.id)}
+                        className={`absolute right-3 top-3 rounded-full p-2 shadow-sm transition ${
+                          favoriteMenuItemIds.has(item.id)
+                            ? 'bg-red-500 text-white hover:bg-red-600'
+                            : 'bg-white text-slate-500 hover:bg-red-50 hover:text-red-500'
+                        }`}
+                        aria-label={favoriteMenuItemIds.has(item.id) ? 'Quitar producto de favoritos' : 'Agregar producto a favoritos'}
+                      >
+                        <Heart className={`h-4 w-4 ${favoriteMenuItemIds.has(item.id) ? 'fill-current' : ''}`} />
+                      </button>
                     </div>
                     <div className="p-4">
                       <div className="flex justify-between items-start mb-2">
                         <h3 className="font-bold text-gray-800 flex-1">{item.name}</h3>
-                        {item.category && (
+                        {favoriteMenuItemIds.has(item.id) ? (
+                          <span className="rounded bg-red-50 px-2 py-1 text-xs font-semibold text-red-600">
+                            Favorito
+                          </span>
+                        ) : item.category && (
                           <span className="text-xs bg-orange-100 text-orange-700 px-2 py-1 rounded">
                             {item.category}
                           </span>
