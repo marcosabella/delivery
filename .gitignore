@@ -21,3 +21,4 @@ dist-ssr
 *.sln
 *.sw?
 .env
+public/client_secret_*.json

@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { UtensilsCrossed } from 'lucide-react';
 
+const SHOW_FACEBOOK_LOGIN = false;
+
 export function Auth({ embedded = false }: { embedded?: boolean }) {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
@@ -98,17 +100,19 @@ export function Auth({ embedded = false }: { embedded?: boolean }) {
               {oauthProvider === 'google' ? 'Redirigiendo...' : 'Continuar con Google'}
             </button>
 
-            <button
-              type="button"
-              onClick={() => void handleOAuth('facebook')}
-              disabled={isSubmitting}
-              className="flex w-full items-center justify-center gap-3 rounded-lg bg-[#1877F2] px-4 py-3 font-semibold text-white transition hover:bg-[#166FE5] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 fill-current">
-                <path d="M22 12a10 10 0 1 0-11.6 9.9v-7H7.9V12h2.5V9.8c0-2.5 1.5-3.9 3.8-3.9 1.1 0 2.2.2 2.2.2v2.5h-1.2c-1.2 0-1.6.7-1.6 1.5V12h2.7l-.4 2.9h-2.3v7A10 10 0 0 0 22 12Z" />
-              </svg>
-              {oauthProvider === 'facebook' ? 'Redirigiendo...' : 'Continuar con Facebook'}
-            </button>
+            {SHOW_FACEBOOK_LOGIN && (
+              <button
+                type="button"
+                onClick={() => void handleOAuth('facebook')}
+                disabled={isSubmitting}
+                className="flex w-full items-center justify-center gap-3 rounded-lg bg-[#1877F2] px-4 py-3 font-semibold text-white transition hover:bg-[#166FE5] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 fill-current">
+                  <path d="M22 12a10 10 0 1 0-11.6 9.9v-7H7.9V12h2.5V9.8c0-2.5 1.5-3.9 3.8-3.9 1.1 0 2.2.2 2.2.2v2.5h-1.2c-1.2 0-1.6.7-1.6 1.5V12h2.7l-.4 2.9h-2.3v7A10 10 0 0 0 22 12Z" />
+                </svg>
+                {oauthProvider === 'facebook' ? 'Redirigiendo...' : 'Continuar con Facebook'}
+              </button>
+            )}
           </div>
 
           <div className="my-6 flex items-center gap-3" aria-hidden="true">

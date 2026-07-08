@@ -1846,15 +1846,15 @@ export function RestaurantDashboard() {
                                 <table className="w-full table-fixed text-xs">
                                   <thead className="border-b border-gray-200 bg-gray-50 text-xs uppercase text-gray-500">
                                     <tr>
-                                      <th className="w-[9%] px-2 py-2 text-left font-semibold">Pedido</th>
-                                      <th className="w-[13%] px-2 py-2 text-left font-semibold">Cliente</th>
-                                      <th className="w-[10%] px-2 py-2 text-left font-semibold">Mozo</th>
-                                      <th className="w-[12%] px-2 py-2 text-left font-semibold">Fecha</th>
-                                      <th className="w-[15%] px-2 py-2 text-left font-semibold">Entrega</th>
-                                      <th className="w-[8%] px-2 py-2 text-right font-semibold">Total</th>
-                                      <th className="w-[5%] px-2 py-2 text-center font-semibold">Items</th>
-                                      <th className="w-[10%] px-2 py-2 text-left font-semibold">Estado</th>
-                                      <th className="w-[18%] px-2 py-2 text-right font-semibold">Acciones</th>
+                                      <th className="w-[7%] px-1.5 py-2 text-left font-semibold">Pedido</th>
+                                      <th className="w-[12%] px-1.5 py-2 text-left font-semibold">Cliente</th>
+                                      <th className="w-[8%] px-1.5 py-2 text-left font-semibold">Mozo</th>
+                                      <th className="w-[9%] px-1.5 py-2 text-left font-semibold">Fecha</th>
+                                      <th className="w-[13%] px-1.5 py-2 text-left font-semibold">Entrega</th>
+                                      <th className="w-[7%] px-1.5 py-2 text-right font-semibold">Total</th>
+                                      <th className="w-[4%] px-1.5 py-2 text-center font-semibold">Items</th>
+                                      <th className="w-[7%] px-1.5 py-2 text-left font-semibold">Estado</th>
+                                      <th className="w-[33%] px-1.5 py-2 text-right font-semibold">Acciones</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-gray-100">
@@ -1864,7 +1864,7 @@ export function RestaurantDashboard() {
                                       const isInRoute = routeOrderIds.includes(order.id);
                                       return (
                                         <tr key={order.id} className={`transition ${isSelected ? 'bg-orange-50' : 'bg-white hover:bg-gray-50'}`}>
-                                          <td className="whitespace-nowrap px-2 py-2 align-middle">
+                                          <td className="whitespace-nowrap px-1.5 py-2 align-middle">
                                             <button
                                               type="button"
                                               onClick={() => handleOpenOrderDetail(order.id)}
@@ -1873,11 +1873,11 @@ export function RestaurantDashboard() {
                                               #{order.id.slice(0, 8)}
                                             </button>
                                           </td>
-                                          <td className="min-w-0 px-2 py-2 align-middle">
+                                          <td className="min-w-0 px-1.5 py-2 align-middle">
                                             <p className="truncate font-medium text-gray-800" title={getCustomerName(order)}>{getCustomerName(order)}</p>
                                             {order.customer?.phone && <p className="truncate text-[11px] text-gray-500">{order.customer.phone}</p>}
                                           </td>
-                                          <td className="min-w-0 px-2 py-2 align-middle">
+                                          <td className="min-w-0 px-1.5 py-2 align-middle">
                                             {order.waiter_id || getWaiterName(order) ? (
                                               <p className="truncate font-medium text-gray-700" title={getWaiterName(order) || 'No informado'}>
                                                 {getWaiterName(order) || 'No informado'}
@@ -1886,10 +1886,11 @@ export function RestaurantDashboard() {
                                               <p className="truncate text-gray-400">No informado</p>
                                             )}
                                           </td>
-                                          <td className="whitespace-nowrap px-2 py-2 align-middle text-gray-700">
-                                            {new Date(order.created_at).toLocaleDateString()} {new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                          <td className="px-1.5 py-2 align-middle text-[11px] leading-tight text-gray-700">
+                                            <span className="block whitespace-nowrap">{new Date(order.created_at).toLocaleDateString()}</span>
+                                            <span className="block whitespace-nowrap text-gray-500">{new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                                           </td>
-                                          <td className="min-w-0 px-2 py-2 align-middle text-gray-600">
+                                          <td className="min-w-0 px-1.5 py-2 align-middle text-gray-600">
                                             <div className="flex items-center gap-1.5">
                                               {isDineInOrder(order) ? (
                                                 <Hash className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" />
@@ -1901,31 +1902,31 @@ export function RestaurantDashboard() {
                                               <span className="truncate" title={getOrderAddressLabel(order)}>{getOrderAddressLabel(order)}</span>
                                             </div>
                                           </td>
-                                          <td className="whitespace-nowrap px-2 py-2 text-right align-middle font-semibold text-orange-600">
+                                          <td className="whitespace-nowrap px-1.5 py-2 text-right align-middle font-semibold text-orange-600">
                                             {moneyFormatter.format(order.total_amount)}
                                           </td>
-                                          <td className="whitespace-nowrap px-2 py-2 text-center align-middle font-medium text-gray-700">
+                                          <td className="whitespace-nowrap px-1.5 py-2 text-center align-middle font-medium text-gray-700">
                                             {order.order_items?.length || 0}
                                           </td>
-                                          <td className="whitespace-nowrap px-2 py-2 align-middle">
-                                            <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${statusColors[order.status]}`}>
+                                          <td className="px-1.5 py-2 align-middle">
+                                            <span className={`inline-flex max-w-full whitespace-normal break-words rounded-full px-1.5 py-1 text-[11px] font-medium leading-tight ${statusColors[order.status]}`}>
                                               {statusLabels[order.status]}
                                             </span>
                                           </td>
-                                          <td className="px-2 py-2 align-middle">
+                                          <td className="px-1.5 py-2 align-middle">
                                             <div className="flex flex-nowrap items-center justify-end gap-1 whitespace-nowrap">
                                               <button
                                                 type="button"
                                                 onClick={() => handlePrintOrderTicket(order)}
-                                                className="inline-flex items-center justify-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-[11px] font-medium text-gray-700 transition hover:bg-gray-50"
+                                                className="inline-flex items-center justify-center gap-1 rounded-md border border-gray-300 px-1.5 py-1 text-[10px] font-medium text-gray-700 transition hover:bg-gray-50"
                                               >
-                                                <Printer className="h-3.5 w-3.5" />
+                                                <Printer className="h-3 w-3" />
                                                 Ticket
                                               </button>
                                               <button
                                                 type="button"
                                                 onClick={() => handleOpenOrderDetail(order.id)}
-                                                className="inline-flex items-center justify-center rounded-md border border-gray-300 px-2 py-1 text-[11px] font-medium text-gray-700 transition hover:bg-gray-50"
+                                                className="inline-flex items-center justify-center rounded-md border border-gray-300 px-1.5 py-1 text-[10px] font-medium text-gray-700 transition hover:bg-gray-50"
                                               >
                                                 Detalle
                                               </button>
@@ -1933,9 +1934,9 @@ export function RestaurantDashboard() {
                                                 <button
                                                   type="button"
                                                   onClick={() => handleUpdateOrderStatus(order.id, nextStatus)}
-                                                  className="inline-flex items-center justify-center gap-1 rounded-md bg-orange-500 px-2 py-1 text-[11px] font-medium text-white transition hover:bg-orange-600"
+                                                  className="inline-flex items-center justify-center gap-1 rounded-md bg-orange-500 px-1.5 py-1 text-[10px] font-medium text-white transition hover:bg-orange-600"
                                                 >
-                                                  <PackageCheck className="h-3.5 w-3.5" />
+                                                  <PackageCheck className="h-3 w-3" />
                                                   {getNextStatusLabel(order)}
                                                 </button>
                                               )}
@@ -1943,11 +1944,11 @@ export function RestaurantDashboard() {
                                                 <button
                                                   type="button"
                                                   onClick={() => toggleRouteOrder(order.id)}
-                                                  className={`inline-flex items-center justify-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition ${
+                                                  className={`inline-flex items-center justify-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-medium transition ${
                                                     isInRoute ? 'bg-cyan-100 text-cyan-800 hover:bg-cyan-200' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                                                   }`}
                                                 >
-                                                  <Route className="h-3.5 w-3.5" />
+                                                  <Route className="h-3 w-3" />
                                                   {isInRoute ? 'En ruta' : 'Ruta'}
                                                 </button>
                                               )}
@@ -1955,9 +1956,9 @@ export function RestaurantDashboard() {
                                                 <button
                                                   type="button"
                                                   onClick={() => handleCloseTableOrder(order)}
-                                                  className="inline-flex items-center justify-center gap-1 rounded-md bg-green-600 px-2 py-1 text-[11px] font-medium text-white transition hover:bg-green-700"
+                                                  className="inline-flex items-center justify-center gap-1 rounded-md bg-green-600 px-1.5 py-1 text-[10px] font-medium text-white transition hover:bg-green-700"
                                                 >
-                                                  <CheckCircle2 className="h-3.5 w-3.5" />
+                                                  <CheckCircle2 className="h-3 w-3" />
                                                   Cerrar mesa
                                                 </button>
                                               )}
@@ -1965,9 +1966,9 @@ export function RestaurantDashboard() {
                                                 <button
                                                   type="button"
                                                   onClick={() => handleUpdateOrderStatus(order.id, 'cancelled')}
-                                                  className="inline-flex items-center justify-center gap-1 rounded-md bg-red-50 px-2 py-1 text-[11px] font-medium text-red-700 transition hover:bg-red-100"
+                                                  className="inline-flex items-center justify-center gap-1 rounded-md bg-red-50 px-1.5 py-1 text-[10px] font-medium text-red-700 transition hover:bg-red-100"
                                                 >
-                                                  <XCircle className="h-3.5 w-3.5" />
+                                                  <XCircle className="h-3 w-3" />
                                                   Cancelar
                                                 </button>
                                               )}
