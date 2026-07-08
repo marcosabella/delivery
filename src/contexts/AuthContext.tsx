@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { User } from '@supabase/supabase-js';
+import { Capacitor } from '@capacitor/core';
 import { supabase, Profile } from '../lib/supabase';
 
 type AuthContextType = {
@@ -17,6 +18,7 @@ type AuthContextType = {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const BOOTSTRAP_ADMIN_EMAIL = 'admin@admin.com';
 const PROFILE_LOAD_RETRY_DELAYS_MS = [500, 1500];
+const CAPACITOR_AUTH_REDIRECT_URL = 'https://localhost';
 
 function isNetworkError(error: unknown) {
   if (error instanceof Error) {
@@ -49,6 +51,41 @@ function getErrorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
+function getAuthRedirectUrl() {
+  const configuredRedirectUrl = import.meta.env.VITE_AUTH_REDIRECT_URL?.trim();
+  if (configuredRedirectUrl) return configuredRedirectUrl;
+
+  if (Capacitor.isNativePlatform()) return CAPACITOR_AUTH_REDIRECT_URL;
+
+  return window.location.origin;
+}
+
+function getOAuthCallbackError() {
+  const params = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const error = params.get('error') || hashParams.get('error');
+  const description = params.get('error_description') || hashParams.get('error_description');
+
+  if (!error && !description) return null;
+
+  return description || error || 'No se pudo completar el inicio de sesion con el proveedor';
+}
+
+function clearOAuthCallbackError() {
+  if (!window.history.replaceState) return;
+
+  const url = new URL(window.location.href);
+  url.searchParams.delete('error');
+  url.searchParams.delete('error_code');
+  url.searchParams.delete('error_description');
+
+  if (url.hash.includes('error')) {
+    url.hash = '';
+  }
+
+  window.history.replaceState({}, document.title, url.toString());
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -60,6 +97,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     async function initializeSession() {
       try {
+        const oauthCallbackError = getOAuthCallbackError();
+        if (oauthCallbackError) {
+          setAuthError(oauthCallbackError);
+          clearOAuthCallbackError();
+        }
+
         const { data: { session }, error } = await supabase.auth.getSession();
         if (error) throw error;
         if (!isMounted) return;
@@ -216,7 +259,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { error } = await supabase.auth.signInWithOAuth({
       provider,
       options: {
-        redirectTo: window.location.origin,
+        redirectTo: getAuthRedirectUrl(),
       },
     });
 
