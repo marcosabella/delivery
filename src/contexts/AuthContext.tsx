@@ -1,5 +1,7 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { User } from '@supabase/supabase-js';
+import { App } from '@capacitor/app';
+import { Browser } from '@capacitor/browser';
 import { Capacitor } from '@capacitor/core';
 import { supabase, Profile } from '../lib/supabase';
 
@@ -18,7 +20,7 @@ type AuthContextType = {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const BOOTSTRAP_ADMIN_EMAIL = 'admin@admin.com';
 const PROFILE_LOAD_RETRY_DELAYS_MS = [500, 1500];
-const CAPACITOR_AUTH_REDIRECT_URL = 'https://localhost';
+const CAPACITOR_AUTH_REDIRECT_URL = 'com.sistemapedidos.web://auth/callback';
 
 function isNetworkError(error: unknown) {
   if (error instanceof Error) {
@@ -94,6 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let isMounted = true;
+    let removeAppUrlOpenListener: (() => void) | undefined;
 
     async function initializeSession() {
       try {
@@ -123,6 +126,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     void initializeSession();
 
+    if (Capacitor.isNativePlatform()) {
+      void App.addListener('appUrlOpen', async (event) => {
+        if (!event.url.startsWith(CAPACITOR_AUTH_REDIRECT_URL)) return;
+
+        try {
+          await Browser.close();
+        } catch {
+          // Browser.close can fail if the browser was already dismissed.
+        }
+
+        const callbackUrl = new URL(event.url);
+        const errorDescription = callbackUrl.searchParams.get('error_description');
+        const error = callbackUrl.searchParams.get('error');
+        const code = callbackUrl.searchParams.get('code');
+
+        if (errorDescription || error) {
+          setAuthError(errorDescription || error || 'No se pudo completar el inicio de sesion con Google');
+          setLoading(false);
+          return;
+        }
+
+        if (!code) return;
+
+        setLoading(true);
+        setAuthError(null);
+
+        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+        if (exchangeError) {
+          setAuthError(getErrorMessage(exchangeError, 'No se pudo completar el inicio de sesion con Google'));
+          setLoading(false);
+        }
+      }).then((listener) => {
+        removeAppUrlOpenListener = () => void listener.remove();
+      });
+    }
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       if (!isMounted) return;
 
@@ -142,6 +181,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => {
       isMounted = false;
+      removeAppUrlOpenListener?.();
       subscription.unsubscribe();
     };
   }, []);
@@ -256,14 +296,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function signInWithOAuth(provider: 'google' | 'facebook') {
     setAuthError(null);
 
-    const { error } = await supabase.auth.signInWithOAuth({
+    const { data, error } = await supabase.auth.signInWithOAuth({
       provider,
       options: {
         redirectTo: getAuthRedirectUrl(),
+        skipBrowserRedirect: Capacitor.isNativePlatform(),
       },
     });
 
     if (error) throw error;
+
+    if (Capacitor.isNativePlatform() && data.url) {
+      await Browser.open({ url: data.url });
+    }
   }
 
   async function signOut() {
