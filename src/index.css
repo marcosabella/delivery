@@ -8,34 +8,49 @@
     --app-safe-right: env(safe-area-inset-right, 0px);
     --app-safe-bottom: env(safe-area-inset-bottom, 0px);
     --app-safe-left: env(safe-area-inset-left, 0px);
+    --app-system-bottom-reserve: max(var(--app-safe-bottom), 0px);
+    --app-overlay-padding-bottom: calc(1rem + var(--app-system-bottom-reserve));
   }
 
   html {
     font-size: 14px;
+    min-height: 100%;
   }
 
   body {
+    min-height: 100%;
     font-size: 1rem;
     padding: 0;
   }
 
   #root {
-    min-height: 100vh;
+    min-height: 100dvh;
   }
 }
 
 @layer utilities {
+  @media (hover: none) and (pointer: coarse) {
+    :root {
+      --app-system-bottom-reserve: max(var(--app-safe-bottom), 2.25rem);
+      --app-overlay-padding-bottom: calc(1rem + var(--app-system-bottom-reserve));
+    }
+  }
+
   header.sticky {
     padding-top: var(--app-safe-top);
   }
 
   aside.fixed.inset-y-0 {
     padding-top: var(--app-safe-top);
-    padding-bottom: var(--app-safe-bottom);
+    padding-bottom: var(--app-system-bottom-reserve);
+  }
+
+  .fixed.inset-0 {
+    padding-bottom: var(--app-overlay-padding-bottom);
   }
 
   .fixed.inset-x-0.bottom-0 {
-    padding-bottom: max(0.75rem, var(--app-safe-bottom));
+    padding-bottom: max(0.75rem, var(--app-system-bottom-reserve));
   }
 
   .safe-top {
@@ -43,7 +58,7 @@
   }
 
   .safe-bottom {
-    padding-bottom: var(--app-safe-bottom);
+    padding-bottom: var(--app-system-bottom-reserve);
   }
 
   .safe-x {
